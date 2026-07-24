@@ -39,8 +39,12 @@ type Tailer struct {
 // New constructs a Tailer for the given chat-logs directory. Start must be
 // called to begin polling.
 func New(dir string) *Tailer {
+	var cleaned string
+	if dir != "" {
+		cleaned = filepath.Clean(dir)
+	}
 	return &Tailer{
-		Dir:          filepath.Clean(dir),
+		Dir:          cleaned,
 		Lines:        make(chan string, 256),
 		pollInterval: 500 * time.Millisecond,
 		done:         make(chan struct{}),
@@ -71,10 +75,31 @@ func (t *Tailer) loop(ctx context.Context) {
 	}
 }
 
+// SetDir updates the directory being tailed live.
+func (t *Tailer) SetDir(dir string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if dir == "" {
+		t.Dir = ""
+	} else {
+		t.Dir = filepath.Clean(dir)
+	}
+	t.curFile = ""
+	t.curOffset = 0
+}
+
 // pollOnce finds the newest *.log file in t.Dir, reads any bytes past the
 // remembered offset, and emits complete lines (newline-stripped) on Lines.
 func (t *Tailer) pollOnce(ctx context.Context) {
-	entries, err := os.ReadDir(t.Dir)
+	t.mu.Lock()
+	dir := t.Dir
+	t.mu.Unlock()
+
+	if dir == "" || dir == "." {
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -94,7 +119,7 @@ func (t *Tailer) pollOnce(ctx context.Context) {
 		mt := info.ModTime().UnixNano()
 		if mt > newestMT {
 			newestMT = mt
-			newest = filepath.Join(t.Dir, e.Name())
+			newest = filepath.Join(dir, e.Name())
 		}
 	}
 	if newest == "" {
@@ -210,5 +235,8 @@ func splitLines(b []byte) []string {
 
 // String is a debug helper.
 func (t *Tailer) String() string {
-	return fmt.Sprintf("logtail.Tailer(dir=%s, file=%s, off=%d)", t.Dir, t.curFile, t.curOffset)
+	t.mu.Lock()
+	dir := t.Dir
+	t.mu.Unlock()
+	return fmt.Sprintf("logtail.Tailer(dir=%s, file=%s, off=%d)", dir, t.curFile, t.curOffset)
 }

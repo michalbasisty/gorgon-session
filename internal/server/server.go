@@ -13,6 +13,8 @@ import (
 
 	"github.com/yourname/gorgon-session/internal/config"
 	"github.com/yourname/gorgon-session/internal/favor"
+	"github.com/yourname/gorgon-session/internal/logtail"
+	"github.com/yourname/gorgon-session/internal/loot"
 	"github.com/yourname/gorgon-session/internal/session"
 )
 
@@ -22,11 +24,20 @@ type Server struct {
 	Sess    *session.Manager
 	Favor   *favor.Engine
 	WebFS   fs.FS // embedded static content (web/ folder, serve at root)
+	Tailer  *logtail.Tailer
+	Parser  *loot.Parser
 }
 
 // New wires a Server.
-func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs.FS) *Server {
-	return &Server{Cfg: cfg, Sess: sess, Favor: favor, WebFS: webFS}
+func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs.FS, tailer *logtail.Tailer, parser *loot.Parser) *Server {
+	return &Server{
+		Cfg:    cfg,
+		Sess:   sess,
+		Favor:  favor,
+		WebFS:  webFS,
+		Tailer: tailer,
+		Parser: parser,
+	}
 }
 
 // Mount attaches routes to a mux and returns it.
@@ -154,10 +165,43 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleConfig: GET current config (read-only; edit config.json on disk).
+// handleConfig: GET current config, or POST/PUT to update it live.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost || r.Method == http.MethodPut {
+		var req struct {
+			ChatLogDir         string  `json:"chat_log_dir"`
+			LootRegex          string  `json:"loot_regex"`
+			SellValueThreshold float64 `json:"sell_value_threshold"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Update the server's config
+		s.Cfg.ChatLogDir = req.ChatLogDir
+		s.Cfg.LootRegex = req.LootRegex
+		s.Cfg.SellValueThreshold = req.SellValueThreshold
+
+		// Save to disk
+		if err := config.Save(s.Cfg); err != nil {
+			http.Error(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Update components live!
+		if s.Tailer != nil {
+			s.Tailer.SetDir(req.ChatLogDir)
+		}
+		if s.Parser != nil {
+			_ = s.Parser.SetRegex(req.LootRegex)
+		}
+
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+
 	c := s.Cfg
-	// (phase 2 will add PUT to update ChatLogDir / LootRegex live).
 	writeJSON(w, map[string]any{
 		"http_addr":            c.HTTPAddr,
 		"chat_log_dir":         c.ChatLogDir,

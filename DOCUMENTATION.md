@@ -299,8 +299,22 @@ Establishes a persistent Server-Sent Events stream. Events are formatted as JSON
 
 ## 5. Configuration & Regex Tuning
 
-### 5.1. Tuning the Loot Regex
-The default regex matches standard English client lines. However, if you play in a different locale, use custom chat tabs, or have client options that alter the chat log format, you can override the regex.
+### 5.1. Settings Dashboard (Live Reloading)
+You can configure the application directly from the web interface under the **Settings** tab.
+The following settings can be updated live without restarting the server:
+- **Chat Log Directory**: The folder where Project Gorgon writes its chat logs.
+- **Loot Regex**: A custom regular expression to match loot lines (useful for non-English locales or custom chat tabs).
+- **Sell Value Threshold**: Items with a value greater than or equal to this threshold will be suggested for selling to vendors rather than donating.
+
+When you click **Save Settings**, the server writes the updated configuration to `config.json` and reloads the log tailer and loot parser immediately.
+
+### 5.2. Portable Mode (Local `config.json`)
+The application supports a fully self-contained **Portable Mode**:
+1. It checks for `config.json` in the **same directory as the executable** first.
+2. If found, it uses that directory for all relative paths (including `cache` and `reports`).
+3. If not found, it falls back to the user's home directory (`~/.gorgon-session/config.json`).
+
+This makes it incredibly easy to run the application from a USB drive or a single folder without installing anything or compiling Go code.
 
 To test a custom regex without restarting the server, use the `-test-loot` flag:
 ```powershell
@@ -314,7 +328,7 @@ Example for custom chat log formats:
 "loot_regex": "(?i)You loot \\\"?([A-Z][A-Za-z' ]+?)\\\"?(?:[.,]|\\s+from\\s|$)"
 ```
 
-### 5.2. Configuration File Schema (`config.json`)
+### 5.3. Configuration File Schema (`config.json`)
 ```json
 {
   "http_addr": "127.0.0.1:7777",

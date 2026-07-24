@@ -59,7 +59,17 @@ func Default() Config {
 }
 
 // Path returns the default config file path.
+// It checks next to the executable first (portable mode), then falls back to ~/.gorgon-session/config.json.
 func Path() (string, error) {
+	// 1. Check next to the executable first (portable mode)
+	if execPath, err := os.Executable(); err == nil {
+		localConfig := filepath.Join(filepath.Dir(execPath), "config.json")
+		if _, err := os.Stat(localConfig); err == nil {
+			return localConfig, nil
+		}
+	}
+
+	// 2. Fallback to user home directory
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // DefaultRegex matches the canonical `[Status] <item> x<qty>? added to inventory.`
@@ -44,6 +45,7 @@ type Event struct {
 // Parser converts raw chat-log lines into loot events. It is safe for
 // concurrent use after construction.
 type Parser struct {
+	mu      sync.RWMutex
 	itemRe  *regexp.Regexp
 	bonusRe *regexp.Regexp
 	tagRe   *regexp.Regexp
@@ -62,7 +64,26 @@ func New(lootRegex string) (*Parser, error) {
 	if err != nil {
 		re = regexp.MustCompile(DefaultRegex)
 	}
-	return &Parser{itemRe: re, bonusRe: regexp.MustCompile(BonusRegex), tagRe: tagStripper()}, nil
+	return &Parser{
+		itemRe:  re,
+		bonusRe: regexp.MustCompile(BonusRegex),
+		tagRe:   tagStripper(),
+	}, nil
+}
+
+// SetRegex compiles and updates the item regex live.
+func (p *Parser) SetRegex(pat string) error {
+	if pat == "" {
+		pat = DefaultRegex
+	}
+	re, err := regexp.Compile(pat)
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.itemRe = re
+	p.mu.Unlock()
+	return nil
 }
 
 // ParseLine returns nil if the line is not a loot event; otherwise an Event.
@@ -81,8 +102,13 @@ func (p *Parser) ParseLine(line string) *Event {
 	if m := p.bonusRe.FindStringSubmatch(line); m != nil {
 		return p.buildEvent(line, m, true)
 	}
+
 	// Main "X added to inventory." line.
-	if m := p.itemRe.FindStringSubmatch(line); m != nil {
+	p.mu.RLock()
+	re := p.itemRe
+	p.mu.RUnlock()
+
+	if m := re.FindStringSubmatch(line); m != nil {
 		return p.buildEvent(line, m, false)
 	}
 	return nil

@@ -123,18 +123,20 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Always initialize and start the tailer. It handles empty directories gracefully.
+	t := logtail.New(cfg.ChatLogDir)
+	_ = t.Start(ctx)
+	go pipeline(ctx, t, parser, nameIdx, engine, mgr)
+
 	if cfg.ChatLogDir == "" {
-		log.Printf("warning: no chat_log_dir configured. set it in ~/.gorgon-session/config.json")
+		log.Printf("warning: no chat_log_dir configured. set it in the settings dashboard")
 	} else {
-		t := logtail.New(cfg.ChatLogDir)
-		_ = t.Start(ctx) // always non-blocking; folder may not exist yet
-		go pipeline(ctx, t, parser, nameIdx, engine, mgr)
 		log.Printf("tailing newest *.log in %s", cfg.ChatLogDir)
 	}
 
 	// Pass the embedded web FS directly; the embed directive in web/embed.go
 	// uses bare filenames so paths inside the FS have no "web/" prefix.
-	srv := server.New(cfg, mgr, engine, web.Files)
+	srv := server.New(cfg, mgr, engine, web.Files, t, parser)
 	h := srv.Mount()
 	hs := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -210,24 +212,22 @@ func pipeline(ctx context.Context, t *logtail.Tailer, p *loot.Parser, idx itemIn
 			if !ok {
 				return
 			}
-ev := p.ParseLine(line)
-		if ev == nil {
-			continue
-		}
-		hit := idx.Lookup(ev.ItemName)
-		dec := eng.Resolve(hit.Item.Name, hit.Item.Keywords, hit.Item.Value)
-		mgr.AddLoot(session.LootEntry{
-			Name:      hit.Item.Name,
-			ItemID:    hit.Item.ItemID,
-			Valor:     hit.Item.Value,
-			Count:     ev.Count,
-			Bonus:     ev.Bonus,
-			FirstSeen: time.Now(),
-			LastSeen:  time.Now(),
-			Decision:  dec,
-		})
+			ev := p.ParseLine(line)
+			if ev == nil {
+				continue
+			}
+			hit := idx.Lookup(ev.ItemName)
+			dec := eng.Resolve(hit.Item.Name, hit.Item.Keywords, hit.Item.Value)
+			mgr.AddLoot(session.LootEntry{
+				Name:      hit.Item.Name,
+				ItemID:    hit.Item.ItemID,
+				Valor:     hit.Item.Value,
+				Count:     ev.Count,
+				Bonus:     ev.Bonus,
+				FirstSeen: time.Now(),
+				LastSeen:  time.Now(),
+				Decision:  dec,
+			})
 		}
 	}
 }
-
-// (no trailing helpers)

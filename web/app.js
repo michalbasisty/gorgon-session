@@ -68,7 +68,7 @@ $$('.nav-item').forEach(item => {
 
 function switchView(view) {
   state.currentView = view;
-  $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === view));
+  $('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === view));
   $('#view-tracker').classList.toggle('hidden', view !== 'tracker');
   $('#view-summary').classList.toggle('hidden', view !== 'summary');
   $('#view-history').classList.toggle('hidden', view !== 'history');
@@ -76,6 +76,7 @@ function switchView(view) {
   $('#view-crafting').classList.toggle('hidden', view !== 'crafting');
   $('#view-favor').classList.toggle('hidden', view !== 'favor');
   $('#view-shopnpc').classList.toggle('hidden', view !== 'shopnpc');
+  $('#view-settings').classList.toggle('hidden', view !== 'settings');
 
   const titles = { 
     tracker: 'Tracker', 
@@ -84,7 +85,8 @@ function switchView(view) {
     'history-detail': 'Session Details',
     crafting: 'Crafting',
     favor: 'Favor Progress',
-    shopnpc: 'Shop NPC'
+    shopnpc: 'Shop NPC',
+    settings: 'Settings'
   };
   $('#view-title').innerHTML = `${titles[view]} <small id="state">${state.session?.state || 'idle'}</small>`;
 
@@ -93,6 +95,7 @@ function switchView(view) {
   if (view === 'crafting') renderCraftingView();
   if (view === 'favor') renderFavorView();
   if (view === 'shopnpc') renderShopNPCList();
+  if (view === 'settings') renderSettingsView();
 }
 
 function renderSession(s) {
@@ -886,6 +889,50 @@ setInterval(() => {
     elapsedEl.textContent = ' · ' + fmtElapsed(Date.now() - new Date(state.session.started_at).getTime());
   }
 }, 1000);
+
+// Settings view functions
+async function renderSettingsView() {
+  const statusEl = $('#settings-status');
+  statusEl.textContent = '';
+  statusEl.className = 'settings-status';
+
+  const cfg = await api('/api/config');
+  if (!cfg) {
+    statusEl.textContent = 'Failed to load configuration';
+    statusEl.className = 'settings-status error';
+    return;
+  }
+
+  $('#settings-chat-log-dir').value = cfg.chat_log_dir || '';
+  $('#settings-loot-regex').value = cfg.loot_regex || '';
+  $('#settings-sell-value-threshold').value = cfg.sell_value_threshold || 50;
+}
+
+// Settings form submission
+$('#settings-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const statusEl = $('#settings-status');
+  statusEl.textContent = 'Saving...';
+  statusEl.className = 'settings-status';
+
+  const chat_log_dir = $('#settings-chat-log-dir').value.trim();
+  const loot_regex = $('#settings-loot-regex').value.trim();
+  const sell_value_threshold = parseFloat($('#settings-sell-value-threshold').value) || 0;
+
+  const res = await api('/api/config', 'POST', {
+    chat_log_dir,
+    loot_regex,
+    sell_value_threshold
+  });
+
+  if (res && res.ok) {
+    statusEl.textContent = 'Settings saved successfully!';
+    statusEl.className = 'settings-status success';
+  } else {
+    statusEl.textContent = 'Failed to save settings';
+    statusEl.className = 'settings-status error';
+  }
+});
 
 // First paint
 refreshAll();
