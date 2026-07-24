@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gorgon-session</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <nav class="sidebar">
+    <div class="sidebar-header">gorgon-session</div>
+    <ul class="nav-list">
+      <li class="nav-item active" data-view="tracker">Tracker</li>
+      <li class="nav-item" data-view="summary">Summary</li>
+      <li class="nav-item" data-view="history">History</li>
+      <li class="nav-item" data-view="crafting">Crafting</li>
+      <li class="nav-item" data-view="favor">Favor</li>
+      <li class="nav-item" data-view="shopnpc">Shop NPC</li>
+    </ul>
+  </nav>
+
+  <div class="main-content">
+    <header>
+      <h1 id="view-title">Tracker <small id="state">idle</small></h1>
+      <div class="controls">
+        <input id="dungeon" type="text" placeholder="dungeon / zone name" autocomplete="off">
+        <button id="start">start</button>
+        <button id="stop" disabled>stop</button>
+        <span id="elapsed"></span>
+      </div>
+    </header>
+
+    <main>
+      <!-- Tracker view -->
+      <section id="view-tracker">
+        <h2>looted <span id="count" class="badge">0</span></h2>
+        <table id="loot" aria-busy="false">
+          <thead>
+            <tr><th>time</th><th>item</th><th>#</th><th>verdict</th><th>route</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p id="empty" class="muted">no loot captured yet. enable the in-game chat log
+          (chat window &gt; gear &gt; enable logging, or `/log`) and start a session
+          below.</p>
+      </section>
+
+      <!-- Summary view -->
+      <section id="view-summary" class="hidden">
+        <div class="summary-header">
+          <h2>session summary</h2>
+          <div class="summary-meta">
+            <span id="sum-dungeon"></span>
+            <span id="sum-duration"></span>
+            <span id="sum-items"></span>
+          </div>
+          <div class="summary-controls">
+            <button id="sort-npc" class="sort-btn active">by NPC</button>
+            <button id="sort-map" class="sort-btn">by Map</button>
+          </div>
+        </div>
+
+        <div id="summary-npc-view">
+          <div class="summary-grid">
+            <div class="summary-section favor">
+              <h3>give as favor <span id="favor-count" class="badge">0</span></h3>
+              <div id="favor-list"></div>
+            </div>
+
+            <div class="summary-section sell">
+              <h3>sell <span id="sell-count" class="badge">0</span></h3>
+              <div id="sell-list"></div>
+            </div>
+
+            <div class="summary-section keep">
+              <h3>keep <span id="keep-count" class="badge">0</span></h3>
+              <div id="keep-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="summary-map-view" class="hidden">
+          <div id="map-list"></div>
+        </div>
+      </section>
+
+      <!-- History view -->
+      <section id="view-history" class="hidden">
+        <div class="history-header">
+          <h2>session history</h2>
+          <div class="history-stats">
+            <span id="history-total-sessions">0 sessions</span>
+            <span id="history-total-value">0g total</span>
+          </div>
+        </div>
+        <div id="history-list"></div>
+      </section>
+
+      <!-- History detail view -->
+      <section id="view-history-detail" class="hidden">
+        <div class="history-detail-header">
+          <button id="back-to-history" class="back-btn">← Back to History</button>
+          <h2 id="history-detail-title">Session Details</h2>
+          <div class="history-detail-meta">
+            <span id="history-detail-dungeon"></span>
+            <span id="history-detail-date"></span>
+            <span id="history-detail-duration"></span>
+          </div>
+        </div>
+        <div class="history-detail-stats">
+          <div class="stat-card">
+            <div class="stat-label">Total Items</div>
+            <div class="stat-value" id="history-detail-items">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Total Value</div>
+            <div class="stat-value" id="history-detail-value">0g</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Favor Items</div>
+            <div class="stat-value" id="history-detail-favor">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Sell Items</div>
+            <div class="stat-value" id="history-detail-sell">0</div>
+          </div>
+        </div>
+        <div class="history-detail-content">
+          <h3>Items</h3>
+          <div id="history-detail-items-list"></div>
+        </div>
+      </section>
+
+      <!-- Crafting view -->
+      <section id="view-crafting" class="hidden">
+        <h2>Crafting Checklist</h2>
+        <div class="crafting-controls">
+          <input id="crafting-recipe-name" type="text" placeholder="Recipe name (e.g., Iron Sword)" autocomplete="off">
+          <button id="crafting-add-recipe">Add Recipe</button>
+        </div>
+        <div id="crafting-recipes"></div>
+      </section>
+
+      <!-- Favor view -->
+      <section id="view-favor" class="hidden">
+        <h2>NPC Favor Progress</h2>
+        <div class="settings-search">
+          <input id="favor-search" type="text" placeholder="search NPC..." autocomplete="off">
+        </div>
+        <div id="favor-list-view" class="npc-list"></div>
+      </section>
+
+      <!-- Shop NPC view -->
+      <section id="view-shopnpc" class="hidden">
+        <h2>Shop NPC <span id="shopnpc-count" class="badge">0</span></h2>
+        <div class="settings-search">
+          <input id="shopnpc-search" type="text" placeholder="search NPC..." autocomplete="off">
+        </div>
+        <div id="shopnpc-list" class="npc-list"></div>
+      </section>
+    </main>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
