@@ -456,7 +456,7 @@ func (s *Server) handleSessionExport(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleTraders: GET/POST/DELETE trader management.
+// handleTraders: GET/POST trader management.
 func (s *Server) handleTraders(w http.ResponseWriter, r *http.Request) {
 	if s.Trader == nil {
 		writeJSON(w, []any{})
@@ -465,86 +465,47 @@ func (s *Server) handleTraders(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		// Get all traders with reset time
-		traders := s.Trader.GetAll()
-		type TraderResponse struct {
-			*trader.Trader
-			TimeUntilReset string `json:"time_until_reset"`
-		}
-		responses := make([]TraderResponse, len(traders))
-		for i, t := range traders {
-			duration := s.Trader.TimeUntilReset(t.NPCName)
-			responses[i] = TraderResponse{
-				Trader:         t,
-				TimeUntilReset: trader.FormatDuration(duration),
-			}
-		}
-		writeJSON(w, responses)
+		// Get all barter NPCs from CDN, grouped by area, with tracked data
+		allTraders := s.getAllBarterTraders()
+		writeJSON(w, allTraders)
 
 	case http.MethodPost:
-		// Add trader or log sale
+		// Update trader settings or log sale
 		var req struct {
-			Action     string  `json:"action"` // "add", "log_sale", or "update"
-			NPCName    string  `json:"npc_name"`
-			Area       string  `json:"area"`
+			NPCName     string  `json:"npc_name"`
+			Area        string  `json:"area"`
 			WeeklyLimit float64 `json:"weekly_limit"`
-			Amount     float64 `json:"amount"`
-			ResetDays  int     `json:"reset_days"`
-			ResetHours int     `json:"reset_hours"`
+			Amount      float64 `json:"amount"`
+			ResetDays   int     `json:"reset_days"`
+			ResetHours  int     `json:"reset_hours"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		switch req.Action {
-		case "add":
-			if err := s.Trader.Add(req.NPCName, req.Area, req.WeeklyLimit, req.ResetDays, req.ResetHours); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if err := s.Trader.Save(); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			writeJSON(w, map[string]any{"ok": true})
+		// Ensure trader exists
+		if err := s.Trader.Ensure(req.NPCName, req.Area, req.ResetDays, req.ResetHours); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-		case "log_sale":
+		// Update limit if provided
+		if req.WeeklyLimit > 0 {
+			if err := s.Trader.UpdateLimit(req.NPCName, req.WeeklyLimit); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		// Log sale if amount provided
+		if req.Amount > 0 {
 			if err := s.Trader.LogSale(req.NPCName, req.Amount); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			if err := s.Trader.Save(); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			writeJSON(w, map[string]any{"ok": true})
-
-		case "update":
-			if err := s.Trader.Update(req.NPCName, req.Area, req.WeeklyLimit, req.ResetDays, req.ResetHours); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if err := s.Trader.Save(); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			writeJSON(w, map[string]any{"ok": true})
-
-		default:
-			http.Error(w, "invalid action", http.StatusBadRequest)
 		}
 
-	case http.MethodDelete:
-		// Remove trader
-		var req struct {
-			NPCName string `json:"npc_name"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		s.Trader.Remove(req.NPCName)
 		if err := s.Trader.Save(); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -554,4 +515,71 @@ func (s *Server) handleTraders(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// getAllBarterTraders returns all NPCs with Barter service, grouped by area
+func (s *Server) getAllBarterTraders() []map[string]interface{} {
+	// Get all NPCs from favor engine
+	npcs := s.Favor.GetNPCs()
+	
+	// Group by area
+	areaMap := make(map[string][]map[string]interface{})
+	
+	for _, npc := range npcs {
+		// Check if NPC has Barter service
+		hasBarter := false
+		for _, svc := range npc.Services {
+			if svc.Type == "Barter" {
+				hasBarter = true
+				break
+			}
+		}
+		
+		if !hasBarter {
+			continue
+		}
+		
+		// Get tracked data if exists
+		tracked := s.Trader.Get(npc.Name)
+		
+		npcData := map[string]interface{}{
+			"npc_name":   npc.Name,
+			"area":       npc.AreaFriendly,
+			"has_barter": true,
+		}
+		
+		if tracked != nil {
+			duration := s.Trader.TimeUntilReset(npc.Name)
+			unusedCapacity := tracked.WeeklyLimit - tracked.SoldThisWeek
+			unusedWarning := unusedCapacity > (tracked.WeeklyLimit * 0.5)
+			
+			npcData["weekly_limit"] = tracked.WeeklyLimit
+			npcData["sold_this_week"] = tracked.SoldThisWeek
+			npcData["reset_days"] = tracked.ResetDays
+			npcData["reset_hours"] = tracked.ResetHours
+			npcData["time_until_reset"] = trader.FormatDuration(duration)
+			npcData["unused_warning"] = unusedWarning
+		} else {
+			npcData["weekly_limit"] = 0
+			npcData["sold_this_week"] = 0
+			npcData["reset_days"] = 5
+			npcData["reset_hours"] = 22
+			npcData["time_until_reset"] = "5d 22h"
+			npcData["unused_warning"] = false
+		}
+		
+		areaMap[npc.AreaFriendly] = append(areaMap[npc.AreaFriendly], npcData)
+	}
+	
+	// Convert to sorted slice
+	var result []map[string]interface{}
+	for area, npcs := range areaMap {
+		result = append(result, map[string]interface{}{
+			"area":  area,
+			"npcs":  npcs,
+			"count": len(npcs),
+		})
+	}
+	
+	return result
 }

@@ -330,6 +330,28 @@ func toSet(ks []string) map[string]bool {
 // NPCRows returns the count of indexed NPC rows (for startup diagnostics).
 func (e *Engine) NPCRows() int { return len(e.npcs) }
 
+// GetNPCs returns all NPCs with their services (for trader lookup)
+func (e *Engine) GetNPCs() []cdn.Npc {
+	var npcs []cdn.Npc
+	for _, row := range e.npcs {
+		npc := cdn.Npc{
+			InternalName: row.internal,
+			Name:         row.name,
+			AreaName:     row.areaName,
+			AreaFriendly: row.areaLabel,
+		}
+		// Convert services back to cdn.Service format
+		for _, svc := range row.services {
+			npc.Services = append(npc.Services, cdn.Service{
+				Type:  svc.kind,
+				Favor: svc.favor,
+			})
+		}
+		npcs = append(npcs, npc)
+	}
+	return npcs
+}
+
 // KeywordKeys returns the count of distinct preference keywords indexed
 // (composite keywords are excluded).
 func (e *Engine) KeywordKeys() int { return len(e.byKeyword) }

@@ -103,6 +103,41 @@ func (m *Manager) Add(npcName, area string, weeklyLimit float64, resetDays, rese
 	return nil
 }
 
+// Ensure creates a trader entry if it doesn't exist (with zero limit)
+func (m *Manager) Ensure(npcName, area string, resetDays, resetHours int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.traders[npcName]; exists {
+		return nil
+	}
+
+	m.traders[npcName] = &Trader{
+		NPCName:      npcName,
+		Area:         area,
+		WeeklyLimit:  0,
+		SoldThisWeek: 0,
+		LastSale:     time.Time{},
+		ResetDays:    resetDays,
+		ResetHours:   resetHours,
+	}
+	return nil
+}
+
+// UpdateLimit updates just the weekly limit for a trader
+func (m *Manager) UpdateLimit(npcName string, weeklyLimit float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	t, exists := m.traders[npcName]
+	if !exists {
+		return fmt.Errorf("trader %s not found", npcName)
+	}
+
+	t.WeeklyLimit = weeklyLimit
+	return nil
+}
+
 // Remove removes a trader.
 func (m *Manager) Remove(npcName string) {
 	m.mu.Lock()

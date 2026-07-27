@@ -973,69 +973,89 @@ async function renderTradersView() {
   const container = $('#traders-list');
   if (!container) return;
   
-  const traders = await api('/api/traders');
-  if (!traders) {
+  container.innerHTML = '<div class="summary-empty">Loading traders...</div>';
+  
+  const areas = await api('/api/traders');
+  if (!areas) {
     container.innerHTML = '<div class="summary-empty">Failed to load traders</div>';
     return;
   }
   
-  state.traders = traders;
-  $('#traders-count').textContent = traders.length;
-  
-  if (traders.length === 0) {
-    container.innerHTML = '<div class="summary-empty">No traders added yet. Click "+ Add Trader" to get started.</div>';
-    return;
-  }
+  // Sort areas alphabetically
+  areas.sort((a, b) => a.area.localeCompare(b.area));
   
   container.innerHTML = '';
-  for (const trader of traders) {
-    const card = document.createElement('div');
-    card.className = 'trader-card';
+  
+  for (const areaData of areas) {
+    const areaSection = document.createElement('div');
+    areaSection.className = 'trader-area-section';
     
-    const remaining = trader.weekly_limit - trader.sold_this_week;
-    const percentUsed = (trader.sold_this_week / trader.weekly_limit) * 100;
-    const progressClass = percentUsed >= 90 ? 'danger' : percentUsed >= 70 ? 'warning' : 'normal';
-    
-    // Format reset countdown
-    const resetCountdown = trader.time_until_reset || '5d 22h';
-    
-    card.innerHTML = `
-      <div class="trader-header">
-        <div class="trader-info">
-          <div class="trader-name">${escapeHtml(trader.npc_name)}</div>
-          <div class="trader-area">${escapeHtml(trader.area)}</div>
-        </div>
-        <div class="trader-actions">
-          <button class="trader-edit" onclick="editTrader('${escapeHtml(trader.npc_name).replace(/'/g, "\\'")}')">Edit</button>
-          <button class="trader-delete" onclick="removeTrader('${escapeHtml(trader.npc_name).replace(/'/g, "\\'")}')">×</button>
-        </div>
-      </div>
-      <div class="trader-progress">
-        <div class="progress-bar">
-          <div class="progress-fill ${progressClass}" style="width: ${Math.min(percentUsed, 100)}%"></div>
-        </div>
-        <div class="progress-text">
-          <span>${trader.sold_this_week.toFixed(0)}g / ${trader.weekly_limit.toFixed(0)}g</span>
-          <span class="remaining">${remaining.toFixed(0)}g remaining</span>
-        </div>
-        <div class="reset-time">
-          <span class="reset-label">Resets in:</span>
-          <span class="reset-value">${escapeHtml(resetCountdown)}</span>
-        </div>
-      </div>
-      <div class="trader-actions">
-        <button class="log-sale-btn" onclick="logSale('${escapeHtml(trader.npc_name).replace(/'/g, "\\'")}')">Log Sale</button>
-      </div>
+    const header = document.createElement('div');
+    header.className = 'trader-area-header';
+    header.innerHTML = `
+      <span>${escapeHtml(areaData.area)} <span class="badge">${areaData.count}</span></span>
+      <span class="collapse-icon">▼</span>
     `;
-    container.appendChild(card);
+    header.onclick = () => {
+      const content = areaSection.querySelector('.trader-area-content');
+      const icon = header.querySelector('.collapse-icon');
+      if (content.style.display === 'none') {
+        content.style.display = 'block';
+        icon.textContent = '▼';
+      } else {
+        content.style.display = 'none';
+        icon.textContent = '▶';
+      }
+    };
+    areaSection.appendChild(header);
+    
+    const content = document.createElement('div');
+    content.className = 'trader-area-content';
+    
+    // Sort NPCs by name
+    areaData.npcs.sort((a, b) => a.npc_name.localeCompare(b.npc_name));
+    
+    for (const npc of areaData.npcs) {
+      const row = document.createElement('div');
+      row.className = 'trader-row' + (npc.unused_warning ? ' unused-warning' : '');
+      
+      row.innerHTML = `
+        <div class="trader-name">${escapeHtml(npc.npc_name)}</div>
+        <div class="trader-fields">
+          <label>Limit: <input type="number" class="limit-input" value="${npc.weekly_limit}" min="0" step="1000" onchange="updateTrader('${escapeHtml(npc.npc_name).replace(/'/g, "\\'")}', '${escapeHtml(areaData.area).replace(/'/g, "\\'")}', this.value, null, null, null)"></label>
+          <label>Days: <input type="number" class="days-input" value="${npc.reset_days}" min="0" max="30" onchange="updateTrader('${escapeHtml(npc.npc_name).replace(/'/g, "\\'")}', '${escapeHtml(areaData.area).replace(/'/g, "\\'")}', null, this.value, null, null)"></label>
+          <label>Hours: <input type="number" class="hours-input" value="${npc.reset_hours}" min="0" max="23" onchange="updateTrader('${escapeHtml(npc.npc_name).replace(/'/g, "\\'")}', '${escapeHtml(areaData.area).replace(/'/g, "\\'")}', null, null, this.value, null)"></label>
+          <label>Sold: <input type="number" class="sold-input" value="${npc.sold_this_week}" min="0" step="100" onchange="updateTrader('${escapeHtml(npc.npc_name).replace(/'/g, "\\'")}', '${escapeHtml(areaData.area).replace(/'/g, "\\'")}', null, null, null, this.value)"></label>
+        </div>
+        <div class="trader-status">
+          <span class="reset-timer">${npc.time_until_reset}</span>
+          ${npc.unused_warning ? '<span class="unused-badge">⚠ Unused</span>' : ''}
+        </div>
+      `;
+      content.appendChild(row);
+    }
+    
+    areaSection.appendChild(content);
+    container.appendChild(areaSection);
   }
 }
 
-window.removeTrader = async function(npcName) {
-  if (!confirm(`Remove ${npcName} from traders?`)) return;
+// Update trader settings
+window.updateTrader = async function(npcName, area, limit, days, hours, sold) {
+  const data = {
+    npc_name: npcName,
+    area: area
+  };
   
-  await api('/api/traders', 'DELETE', { npc_name: npcName });
-  renderTradersView();
+  if (limit !== null) data.weekly_limit = parseFloat(limit) || 0;
+  if (days !== null) data.reset_days = parseInt(days) || 0;
+  if (hours !== null) data.reset_hours = parseInt(hours) || 0;
+  if (sold !== null) data.amount = parseFloat(sold) || 0;
+  
+  await api('/api/traders', 'POST', data);
+  
+  // Refresh after a short delay
+  setTimeout(() => renderTradersView(), 500);
 };
 
 window.editTrader = async function(npcName) {

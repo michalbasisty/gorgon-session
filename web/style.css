@@ -1313,6 +1313,102 @@ td.route {
   background: var(--border);
 }
 
+/* Trader area sections */
+.trader-area-section {
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.trader-area-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--row);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  user-select: none;
+}
+.trader-area-header:hover {
+  background: var(--row-alt);
+}
+.collapse-icon {
+  color: var(--muted);
+  font-size: 12px;
+}
+.trader-area-content {
+  padding: 8px;
+  background: var(--bg);
+}
+
+/* Trader rows */
+.trader-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.trader-row:last-child {
+  border-bottom: none;
+}
+.trader-row.unused-warning {
+  background: rgba(241, 196, 15, 0.05);
+}
+.trader-name {
+  flex: 0 0 180px;
+  font-weight: 600;
+}
+.trader-fields {
+  flex: 1;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.trader-fields label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.trader-fields input {
+  width: 70px;
+  padding: 4px 6px;
+  background: var(--row);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+.trader-fields input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.trader-status {
+  flex: 0 0 150px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.reset-timer {
+  color: var(--accent);
+  font-weight: 600;
+}
+.unused-badge {
+  background: var(--sell-vendor);
+  color: var(--bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 /* Warcache solver */
 .warcache-symbols {
   display: flex;
