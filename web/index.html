@@ -14,9 +14,10 @@
       <li class="nav-item active" data-view="tracker">Tracker</li>
       <li class="nav-item" data-view="summary">Summary</li>
       <li class="nav-item" data-view="history">History</li>
-      <li class="nav-item" data-view="crafting">Crafting</li>
       <li class="nav-item" data-view="favor">Favor</li>
       <li class="nav-item" data-view="shopnpc">Shop NPC</li>
+      <li class="nav-item" data-view="traders">Traders</li>
+      <li class="nav-item" data-view="warcache">Warcache</li>
       <li class="nav-item" data-view="settings">Settings</li>
     </ul>
   </nav>
@@ -26,6 +27,7 @@
       <h1 id="view-title">Tracker <small id="state">idle</small></h1>
       <div class="controls">
         <input id="dungeon" type="text" placeholder="dungeon / zone name" autocomplete="off">
+        <input id="notes" type="text" placeholder="session notes (optional)" autocomplete="off">
         <button id="start">start</button>
         <button id="stop" disabled>stop</button>
         <span id="elapsed"></span>
@@ -36,6 +38,16 @@
       <!-- Tracker view -->
       <section id="view-tracker">
         <h2>looted <span id="count" class="badge">0</span></h2>
+        <div class="tracker-controls">
+          <input id="loot-search" type="text" placeholder="search items..." autocomplete="off">
+          <select id="loot-filter">
+            <option value="">all verdicts</option>
+            <option value="favor">favor</option>
+            <option value="sell_vendor">sell vendor</option>
+            <option value="sell_consignment">sell consignment</option>
+            <option value="keep">keep</option>
+          </select>
+        </div>
         <table id="loot" aria-busy="false">
           <thead>
             <tr><th>time</th><th>item</th><th>#</th><th>verdict</th><th>route</th></tr>
@@ -103,6 +115,7 @@
         <div class="history-detail-header">
           <button id="back-to-history" class="back-btn">← Back to History</button>
           <h2 id="history-detail-title">Session Details</h2>
+          <button id="export-csv" class="export-btn">Export CSV</button>
           <div class="history-detail-meta">
             <span id="history-detail-dungeon"></span>
             <span id="history-detail-date"></span>
@@ -133,16 +146,6 @@
         </div>
       </section>
 
-      <!-- Crafting view -->
-      <section id="view-crafting" class="hidden">
-        <h2>Crafting Checklist</h2>
-        <div class="crafting-controls">
-          <input id="crafting-recipe-name" type="text" placeholder="Recipe name (e.g., Iron Sword)" autocomplete="off">
-          <button id="crafting-add-recipe">Add Recipe</button>
-        </div>
-        <div id="crafting-recipes"></div>
-      </section>
-
       <!-- Favor view -->
       <section id="view-favor" class="hidden">
         <h2>NPC Favor Progress</h2>
@@ -159,6 +162,61 @@
           <input id="shopnpc-search" type="text" placeholder="search NPC..." autocomplete="off">
         </div>
         <div id="shopnpc-list" class="npc-list"></div>
+      </section>
+
+      <!-- Traders view -->
+      <section id="view-traders" class="hidden">
+        <h2>Traders <span id="traders-count" class="badge">0</span></h2>
+        <div class="traders-controls">
+          <button id="traders-add-btn" class="add-btn">+ Add Trader</button>
+        </div>
+        <div id="traders-list"></div>
+      </section>
+
+      <!-- Warcache view -->
+      <section id="view-warcache" class="hidden">
+        <h2>Warcache Solver</h2>
+        <p class="muted">12 symbols, 4 slots, duplicates allowed. Enter feedback as "correct,wrong" (e.g. 0,2).</p>
+        
+        <div class="warcache-symbols">
+          <button class="sym-btn" data-sym="0">1</button>
+          <button class="sym-btn" data-sym="1">2</button>
+          <button class="sym-btn" data-sym="2">3</button>
+          <button class="sym-btn" data-sym="3">4</button>
+          <button class="sym-btn" data-sym="4">5</button>
+          <button class="sym-btn" data-sym="5">6</button>
+          <button class="sym-btn" data-sym="6">7</button>
+          <button class="sym-btn" data-sym="7">8</button>
+          <button class="sym-btn" data-sym="8">9</button>
+          <button class="sym-btn" data-sym="9">10</button>
+          <button class="sym-btn" data-sym="10">11</button>
+          <button class="sym-btn" data-sym="11">12</button>
+        </div>
+
+        <div class="warcache-guess-row">
+          <div class="guess-slots">
+            <div class="guess-slot" data-pos="0"></div>
+            <div class="guess-slot" data-pos="1"></div>
+            <div class="guess-slot" data-pos="2"></div>
+            <div class="guess-slot" data-pos="3"></div>
+          </div>
+          <input type="text" id="warcache-feedback" placeholder="feedback (e.g. 0,2)" class="feedback-input">
+          <button id="warcache-submit" class="add-btn">Submit</button>
+          <button id="warcache-undo" class="add-btn" style="background:var(--muted)">Undo</button>
+        </div>
+
+        <div class="warcache-suggestion">
+          <span>Suggested guess: </span>
+          <span id="warcache-suggestion" class="suggestion-text">1 1 1 1</span>
+          <button id="warcache-use-suggestion" class="add-btn" style="font-size:12px;padding:4px 8px">Use</button>
+        </div>
+
+        <div class="warcache-status">
+          <span id="warcache-remaining">20,736 possibilities remaining</span>
+          <button id="warcache-reset" class="add-btn" style="background:#e74c3c;font-size:12px;padding:4px 8px">Reset</button>
+        </div>
+
+        <div id="warcache-history"></div>
       </section>
 
       <!-- Settings view -->
@@ -180,9 +238,23 @@
             <input id="settings-sell-value-threshold" type="number" min="0" placeholder="50" autocomplete="off">
             <small class="form-help">Items worth more than this will be suggested for selling instead of donating.</small>
           </div>
+          <div class="form-group">
+            <label for="settings-notification-threshold">Notification Threshold (g)</label>
+            <input id="settings-notification-threshold" type="number" min="0" placeholder="500" autocomplete="off">
+            <small class="form-help">Items worth this much or more will trigger browser notifications when looted.</small>
+          </div>
           <button type="submit" id="settings-save">Save Settings</button>
           <span id="settings-status" class="settings-status"></span>
         </form>
+
+        <h3>Player Prices</h3>
+        <p class="form-help">Items that sell for more to other players than the vendor value. These will be routed to consignment.</p>
+        <div class="player-prices-add">
+          <input id="pp-item-name" type="text" placeholder="Item name" autocomplete="off">
+          <input id="pp-item-price" type="number" min="0" placeholder="Price (g)" autocomplete="off">
+          <button id="pp-add">Add</button>
+        </div>
+        <div id="pp-list"></div>
       </section>
     </main>
   </div>

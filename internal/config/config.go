@@ -39,6 +39,13 @@ type Config struct {
 	// SellValueThreshold: items with Value >= this are suggested vendor-sell
 	// rather than donate-if-no-loves-them (helps avoid wasting coin value).
 	SellValueThreshold float64 `json:"sell_value_threshold"`
+	// PlayerPrices: custom prices for items that sell for more to other
+	// players than the vendor value (e.g. runestones). Key = item name,
+	// value = player market price in gold.
+	PlayerPrices map[string]float64 `json:"player_prices"`
+	// NotificationThreshold: items with Value >= this trigger browser
+	// notifications when looted (if notifications are enabled in the UI).
+	NotificationThreshold float64 `json:"notification_threshold"`
 }
 
 // Default returns the platform-appropriate default config.
@@ -46,15 +53,17 @@ func Default() Config {
 	home, _ := os.UserHomeDir()
 	appDir := filepath.Join(home, ".gorgon-session")
 	return Config{
-		HTTPAddr:           "127.0.0.1:7777",
-		ChatLogDir:         defaultChatLogDir(),
-		LootRegex:          "",
-		CDNRoot:            "http://cdn.projectgorgon.com",
-		VersionFile:        "http://client.projectgorgon.com/fileversion.txt",
-		FallbackVersion:   "v480",
-		CacheDir:           filepath.Join(appDir, "cache"),
-		ReportDir:          filepath.Join(appDir, "reports"),
-		SellValueThreshold: 50,
+		HTTPAddr:              "127.0.0.1:7777",
+		ChatLogDir:            defaultChatLogDir(),
+		LootRegex:             "",
+		CDNRoot:               "http://cdn.projectgorgon.com",
+		VersionFile:           "http://client.projectgorgon.com/fileversion.txt",
+		FallbackVersion:      "v480",
+		CacheDir:              filepath.Join(appDir, "cache"),
+		ReportDir:             filepath.Join(appDir, "reports"),
+		SellValueThreshold:    50,
+		PlayerPrices:          map[string]float64{},
+		NotificationThreshold: 500,
 	}
 }
 
@@ -104,6 +113,9 @@ func Load() (Config, error) {
 	}
 	if c.ReportDir == "" {
 		c.ReportDir = filepath.Join(filepath.Dir(p), "reports")
+	}
+	if c.PlayerPrices == nil {
+		c.PlayerPrices = map[string]float64{}
 	}
 	return c, nil
 }

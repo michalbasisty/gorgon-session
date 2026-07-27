@@ -15,7 +15,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -27,6 +30,7 @@ import (
 	"github.com/yourname/gorgon-session/internal/loot"
 	"github.com/yourname/gorgon-session/internal/server"
 	"github.com/yourname/gorgon-session/internal/session"
+	"github.com/yourname/gorgon-session/internal/trader"
 	"github.com/yourname/gorgon-session/web"
 )
 
@@ -37,7 +41,6 @@ func main() {
 		lootRe   = flag.String("loot-regex", "", "override loot-line regex (capture groups: 1=name, 2=count?)")
 		version  = flag.String("version", "", "force a specific CDN version (e.g. v480) instead of auto-detect")
 		testName = flag.String("test-loot", "", "test the loot regex against a pasted chat-log line, then exit")
-		dumpNpcs = flag.Bool("dump-npcs", false, "print NPC favor data summary as JSON, then exit")
 	)
 	flag.Parse()
 
@@ -88,14 +91,8 @@ func main() {
 
 	nameIdx := indexItemsByName(items)
 	engine := favor.FromNpcs(npcs)
+	engine.SetPlayerPrices(cfg.PlayerPrices)
 	log.Printf("favor engine: %d npcs indexed, %d pref-keywords", engine.NPCRows(), engine.KeywordKeys())
-
-	if *dumpNpcs {
-		summary := engine.Summary()
-		b, _ := json.MarshalIndent(summary, "", "  ")
-		fmt.Println(string(b))
-		return
-	}
 
 	parser, err := loot.New(cfg.LootRegex)
 	if err != nil {
@@ -109,7 +106,7 @@ func main() {
 			os.Exit(2)
 		}
 		match := nameIdx.Lookup(ev.ItemName)
-		dec := engine.Resolve(match.ItemName, match.Item.Keywords, match.Item.Value)
+		dec := engine.ResolveItem(match.Item)
 		fmt.Printf("matched item:   %q\n", ev.ItemName)
 		fmt.Printf("resolved ->     %q  (item_%d, keywords=%v)\n", match.Item.Name, match.Item.ItemID, match.Item.Keywords)
 		b, _ := json.MarshalIndent(dec, "", "  ")
@@ -126,7 +123,7 @@ func main() {
 	// Always initialize and start the tailer. It handles empty directories gracefully.
 	t := logtail.New(cfg.ChatLogDir)
 	_ = t.Start(ctx)
-	go pipeline(ctx, t, parser, nameIdx, engine, mgr)
+	go pipeline(ctx, t, parser, nameIdx, engine, mgr, client, ver)
 
 	if cfg.ChatLogDir == "" {
 		log.Printf("warning: no chat_log_dir configured. set it in the settings dashboard")
@@ -134,9 +131,16 @@ func main() {
 		log.Printf("tailing newest *.log in %s", cfg.ChatLogDir)
 	}
 
+	// Initialize trader manager
+	traderFile := filepath.Join(filepath.Dir(cfg.ReportDir), "traders.json")
+	traderMgr := trader.New(traderFile)
+	if err := traderMgr.Load(); err != nil {
+		log.Printf("warning: failed to load traders: %v", err)
+	}
+
 	// Pass the embedded web FS directly; the embed directive in web/embed.go
 	// uses bare filenames so paths inside the FS have no "web/" prefix.
-	srv := server.New(cfg, mgr, engine, web.Files, t, parser)
+	srv := server.New(cfg, mgr, engine, web.Files, t, parser, traderMgr, items, ver)
 	h := srv.Mount()
 	hs := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -147,6 +151,27 @@ func main() {
 	go func() {
 		if err := hs.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http: %v", err)
+		}
+	}()
+
+	// Open browser after a short delay to let server start
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		url := fmt.Sprintf("http://%s", cfg.HTTPAddr)
+		log.Printf("opening browser at %s", url)
+		
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "windows":
+			cmd = exec.Command("cmd", "/c", "start", url)
+		case "darwin":
+			cmd = exec.Command("open", url)
+		default: // Linux, BSD, etc.
+			cmd = exec.Command("xdg-open", url)
+		}
+		
+		if err := cmd.Start(); err != nil {
+			log.Printf("failed to open browser: %v", err)
 		}
 	}()
 
@@ -203,7 +228,7 @@ func (i itemIndex) Lookup(rawName string) struct {
 }
 
 // pipeline converts chat lines into session loot events.
-func pipeline(ctx context.Context, t *logtail.Tailer, p *loot.Parser, idx itemIndex, eng *favor.Engine, mgr *session.Manager) {
+func pipeline(ctx context.Context, t *logtail.Tailer, p *loot.Parser, idx itemIndex, eng *favor.Engine, mgr *session.Manager, cdnClient *cdn.Client, cdnVersion cdn.Version) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -217,10 +242,11 @@ func pipeline(ctx context.Context, t *logtail.Tailer, p *loot.Parser, idx itemIn
 				continue
 			}
 			hit := idx.Lookup(ev.ItemName)
-			dec := eng.Resolve(hit.Item.Name, hit.Item.Keywords, hit.Item.Value)
+			dec := eng.ResolveItem(hit.Item)
 			mgr.AddLoot(session.LootEntry{
 				Name:      hit.Item.Name,
 				ItemID:    hit.Item.ItemID,
+				IconURL:   cdnClient.IconURL(cdnVersion, hit.Item.IconID),
 				Valor:     hit.Item.Value,
 				Count:     ev.Count,
 				Bonus:     ev.Bonus,

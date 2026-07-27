@@ -12,7 +12,6 @@ package logtail
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -233,10 +232,3 @@ func splitLines(b []byte) []string {
 	return out
 }
 
-// String is a debug helper.
-func (t *Tailer) String() string {
-	t.mu.Lock()
-	dir := t.Dir
-	t.mu.Unlock()
-	return fmt.Sprintf("logtail.Tailer(dir=%s, file=%s, off=%d)", dir, t.curFile, t.curOffset)
-}

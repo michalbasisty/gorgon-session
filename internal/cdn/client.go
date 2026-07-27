@@ -108,15 +108,17 @@ type ItemsFile map[string]Item
 // Item is the subset of fields the dungeon-session app needs. Other fields
 // are kept in `Raw` for forward compatibility without re-parsing.
 type Item struct {
-	ItemID       int      `json:"-"` // populated by LoadItems from key name
-	InternalName string   `json:"InternalName"`
-	Name         string   `json:"Name"`
-	Description  string   `json:"Description"`
-	IconID       int      `json:"IconId"`
-	Value        float64  `json:"Value"`
-	MaxStackSize int      `json:"MaxStackSize"`
-	NumUses      int      `json:"NumUses"`
-	Keywords     []string `json:"Keywords"`
+	ItemID        int      `json:"-"` // populated by LoadItems from key name
+	InternalName  string   `json:"InternalName"`
+	Name          string   `json:"Name"`
+	Description   string   `json:"Description"`
+	IconID        int      `json:"IconId"`
+	Value         float64  `json:"Value"`
+	MaxStackSize  int      `json:"MaxStackSize"`
+	NumUses       int      `json:"NumUses"`
+	Keywords      []string `json:"Keywords"`
+	EquipmentSlot string   `json:"EquipmentSlot,omitempty"`
+	SkillPrereq   string   `json:"SkillPrereq,omitempty"`
 }
 
 // NpcsFile is the JSON root of npcs.json: a map of internal name -> Npc.
@@ -199,4 +201,13 @@ func keyID(k string) int {
 	}
 	n, _ := strconv.Atoi(k[idx+1:])
 	return n
+}
+
+// IconURL returns the CDN URL for an item icon by its IconID.
+// Icons are served at /vXXX/icons/ICONID.png
+func (c *Client) IconURL(v Version, iconID int) string {
+	if iconID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s/%s/icons/%d.png", strings.TrimRight(c.Root, "/"), v, iconID)
 }

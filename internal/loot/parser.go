@@ -48,7 +48,6 @@ type Parser struct {
 	mu      sync.RWMutex
 	itemRe  *regexp.Regexp
 	bonusRe *regexp.Regexp
-	tagRe   *regexp.Regexp
 }
 
 // New builds a parser. If lootRegex is empty, DefaultRegex is used. If the
@@ -67,7 +66,6 @@ func New(lootRegex string) (*Parser, error) {
 	return &Parser{
 		itemRe:  re,
 		bonusRe: regexp.MustCompile(BonusRegex),
-		tagRe:   tagStripper(),
 	}, nil
 }
 
@@ -95,9 +93,6 @@ func (p *Parser) ParseLine(line string) *Event {
 	if line == "" {
 		return nil
 	}
-	stripped := line // chat-log lines have no [<time>] prefix; keep as-is for the regexes (which all start with `[Status]` or `Also found`)
-	_ = stripped
-
 	// "Also found X (speed bonus)" follow-up line.
 	if m := p.bonusRe.FindStringSubmatch(line); m != nil {
 		return p.buildEvent(line, m, true)
@@ -128,10 +123,3 @@ func (p *Parser) buildEvent(raw string, m []string, bonus bool) *Event {
 	return &Event{Raw: raw, ItemName: name, Count: count, Bonus: bonus}
 }
 
-// tagStripper is retained for forward-compatibility (future combat / ability
-// chat-log lines may carry inline <color> tags the way the in-game chat
-// window does); not applied to [Status] loot lines today, but harmless to
-// keep around.
-func tagStripper() *regexp.Regexp {
-	return regexp.MustCompile(`</?color[^>]*>|<icon=\d+>|<[^>]+>`)
-}

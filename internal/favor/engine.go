@@ -26,8 +26,9 @@ import (
 
 // Engine holds indexed NPC data and answers routing decisions.
 type Engine struct {
-	npcs      []npcRow
-	byKeyword map[string][]int // npc pref keyword -> npc row indexes
+	npcs         []npcRow
+	byKeyword    map[string][]int // npc pref keyword -> npc row indexes
+	playerPrices map[string]float64
 }
 
 type npcRow struct {
@@ -55,7 +56,7 @@ type svcRow struct {
 
 // FromNpcs builds an Engine from a cdn-loaded NpcsFile.
 func FromNpcs(npcs cdn.NpcsFile) *Engine {
-	e := &Engine{byKeyword: map[string][]int{}}
+	e := &Engine{byKeyword: map[string][]int{}, playerPrices: map[string]float64{}}
 	for _, n := range npcs {
 		row := npcRow{
 			internal:  n.InternalName,
@@ -89,6 +90,7 @@ type Decision struct {
 	Verdict      Verdict  `json:"verdict"`
 	FavorTargets []Target `json:"favor_targets,omitempty"`
 	SellReason   string   `json:"sell_reason,omitempty"`
+	PlayerPrice  float64  `json:"player_price,omitempty"`
 }
 
 // Verdict classifies the routing decision.
@@ -111,8 +113,18 @@ type Target struct {
 
 // Resolve produces a decision for one item identified by its keywords + value.
 func (e *Engine) Resolve(itemName string, itemKeywords []string, itemValue float64) Decision {
-	d := Decision{Item: itemName}
-	kwSet := toSet(itemKeywords)
+	return e.ResolveItem(cdn.Item{Name: itemName, Keywords: itemKeywords, Value: itemValue})
+}
+
+// ResolveItem produces a decision for a full item, including composite keyword matching.
+func (e *Engine) ResolveItem(item cdn.Item) Decision {
+	d := Decision{Item: item.Name}
+	kwSet := toSet(item.Keywords)
+
+	// Check for player price override
+	if pp, ok := e.playerPrices[item.Name]; ok {
+		d.PlayerPrice = pp
+	}
 
 	type npcScore struct {
 		idx     int
@@ -121,10 +133,8 @@ func (e *Engine) Resolve(itemName string, itemKeywords []string, itemValue float
 	}
 	candidates := map[int]*npcScore{}
 
-	for _, k := range itemKeywords {
-		if isComposite(k) {
-			continue
-		}
+	// Index NPCs by both regular and composite keywords
+	for _, k := range item.Keywords {
 		for _, idx := range e.byKeyword[k] {
 			c, ok := candidates[idx]
 			if !ok {
@@ -134,13 +144,63 @@ func (e *Engine) Resolve(itemName string, itemKeywords []string, itemValue float
 		}
 	}
 
+	// Also check composite keyword matches
+	for idx, row := range e.npcs {
+		for _, p := range row.preferences {
+			hasComposite := false
+			for _, k := range p.keywords {
+				if isComposite(k) {
+					hasComposite = true
+					break
+				}
+			}
+			if !hasComposite {
+				continue
+			}
+			// Check if all composite keywords match
+			allMatch := true
+			for _, k := range p.keywords {
+				if !isComposite(k) {
+					if !kwSet[k] {
+						allMatch = false
+						break
+					}
+					continue
+				}
+				if !matchesComposite(k, item) {
+					allMatch = false
+					break
+				}
+			}
+			if allMatch {
+				c, ok := candidates[idx]
+				if !ok {
+					c = &npcScore{idx: idx}
+					candidates[idx] = c
+				}
+			}
+		}
+	}
+
 	for _, c := range candidates {
 		row := &e.npcs[c.idx]
 		for _, p := range row.preferences {
-			if isAnyComposite(p.keywords) {
-				continue
+			// Check if all keywords (regular + composite) match
+			allMatch := true
+			for _, k := range p.keywords {
+				if isComposite(k) {
+					if !matchesComposite(k, item) {
+						allMatch = false
+						break
+					}
+				} else {
+					if !kwSet[k] {
+						allMatch = false
+						break
+					}
+				}
 			}
-			if !allIn(p.keywords, kwSet) {
+			if !allMatch {
 				continue
 			}
 			c.score += p.pref
@@ -163,6 +223,28 @@ func (e *Engine) Resolve(itemName string, itemKeywords []string, itemValue float
 		return d
 	}
 
+	// If item has player price > vendor value, prefer consignment
+	if d.PlayerPrice > item.Value {
+		for _, row := range e.npcs {
+			for _, s := range row.services {
+				if s.kind != "Consignment" {
+					continue
+				}
+				for _, t := range s.itemTypes {
+					if kwSet[t] {
+						d.Verdict = VerdictSellConsignment
+						d.SellReason = fmt.Sprintf("Consign via %s (%s) - player price %.0fg", row.name, row.areaLabel, d.PlayerPrice)
+						return d
+					}
+				}
+			}
+		}
+		// No consignment NPC accepts it, but player price is higher
+		d.Verdict = VerdictSellConsignment
+		d.SellReason = fmt.Sprintf("Sell to players - player price %.0fg (vendor %.0fg)", d.PlayerPrice, item.Value)
+		return d
+	}
+
 	// No NPC loves it -> sell. Prefer consignment if any NPC accepts the
 	// item's keywords as one of its ItemTypes. Vendor is the fallback.
 	for _, row := range e.npcs {
@@ -180,8 +262,35 @@ func (e *Engine) Resolve(itemName string, itemKeywords []string, itemValue float
 		}
 	}
 	d.Verdict = VerdictSellVendor
-	d.SellReason = fmt.Sprintf("Vendor (value %g)", itemValue)
+	d.SellReason = fmt.Sprintf("Vendor (value %g)", item.Value)
 	return d
+}
+
+// matchesComposite checks if a composite keyword like "EquipmentSlot:Head" matches the item.
+func matchesComposite(keyword string, item cdn.Item) bool {
+	parts := splitComposite(keyword)
+	if len(parts) != 2 {
+		return false
+	}
+	field, value := parts[0], parts[1]
+	switch field {
+	case "EquipmentSlot":
+		return item.EquipmentSlot == value
+	case "SkillPrereq":
+		return item.SkillPrereq == value
+	default:
+		return false
+	}
+}
+
+// splitComposite splits "Field:Value" into ["Field", "Value"].
+func splitComposite(s string) []string {
+	for i := 0; i < len(s); i++ {
+		if s[i] == ':' {
+			return []string{s[:i], s[i+1:]}
+		}
+	}
+	return nil
 }
 
 func isComposite(k string) bool {
@@ -225,66 +334,6 @@ func (e *Engine) NPCRows() int { return len(e.npcs) }
 // (composite keywords are excluded).
 func (e *Engine) KeywordKeys() int { return len(e.byKeyword) }
 
-// Summary is a debug payload enumerating NPCs that have at least one
-// preference, used by `gorgon --dump-npcs`.
-type Summary struct {
-	NPCs         int          `json:"npcs"`
-	WithFavors   int          `json:"with_favors"`
-	Indexable    int          `json:"indexable_keywords"`
-	NPCCatalog   []SummaryNPC `json:"npc_catalog"`
-}
-
-// SummaryNPC is one entry per NPC for the dump.
-type SummaryNPC struct {
-	Internal    string         `json:"internal"`
-	Name        string         `json:"name"`
-	Area        string         `json:"area"`
-	Preferences []SummaryPref  `json:"preferences"`
-	ItemGifts   []string       `json:"item_gifts,omitempty"`
-	Services    []SummarySvc   `json:"services,omitempty"`
-}
-
-type SummaryPref struct {
-	Name     string   `json:"name"`
-	Desire   string   `json:"desire"`
-	Keywords []string `json:"keywords"`
-	Pref     float64  `json:"pref"`
-	Favor    string   `json:"favor,omitempty"`
-}
-
-type SummarySvc struct {
-	Type      string   `json:"type"`
-	Favor     string   `json:"favor,omitempty"`
-	ItemTypes []string `json:"item_types,omitempty"`
-}
-
-// Summary produces a JSON-serializable dump of every NPC with gift prefs.
-func (e *Engine) Summary() Summary {
-	out := Summary{NPCs: len(e.npcs), Indexable: len(e.byKeyword)}
-	for _, r := range e.npcs {
-		if len(r.preferences) == 0 && len(r.services) == 0 {
-			continue
-		}
-		out.WithFavors++
-		s := SummaryNPC{
-			Internal: r.internal, Name: r.name, Area: r.areaLabel,
-		}
-		for _, p := range r.preferences {
-			s.Preferences = append(s.Preferences, SummaryPref{
-				Name: p.name, Desire: p.desire, Keywords: p.keywords, Pref: p.pref,
-			})
-		}
-		s.ItemGifts = append(s.ItemGifts, r.itemGifts...)
-		for _, sv := range r.services {
-			s.Services = append(s.Services, SummarySvc{
-				Type: sv.kind, Favor: sv.favor, ItemTypes: sv.itemTypes,
-			})
-		}
-		out.NPCCatalog = append(out.NPCCatalog, s)
-	}
-	return out
-}
-
 func sortTargets(ts []Target) {
 	for i := 1; i < len(ts); i++ {
 		j := i
@@ -309,4 +358,9 @@ func (e *Engine) NPCList() []NPCInfo {
 		out = append(out, NPCInfo{Name: r.name, Area: r.areaLabel})
 	}
 	return out
+}
+
+// SetPlayerPrices updates the player price overrides.
+func (e *Engine) SetPlayerPrices(prices map[string]float64) {
+	e.playerPrices = prices
 }

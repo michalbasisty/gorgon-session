@@ -5,12 +5,18 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/yourname/gorgon-session/internal/favor"
+)
+
+var (
+	ErrAlreadyRunning = errors.New("a session is already running")
+	ErrNotRunning     = errors.New("no session is currently running")
 )
 
 // State enumerates the lifecycle.
@@ -28,6 +34,7 @@ type Manager struct {
 	mu     sync.RWMutex
 	state  State
 	dungeon string
+	notes   string
 	startedAt time.Time
 	endedAt   time.Time
 
@@ -52,6 +59,7 @@ type Event struct {
 type LootEntry struct {
 	Name      string          `json:"name"`
 	ItemID    int             `json:"item_id"`
+	IconURL   string          `json:"icon_url,omitempty"`
 	Valor     float64         `json:"value"`
 	Count     int             `json:"count"`
 	Bonus     bool            `json:"bonus"`
@@ -72,7 +80,7 @@ func New() *Manager {
 }
 
 // Start begins a session. Returns ErrAlreadyRunning if one is active.
-func (m *Manager) Start(dungeon string) error {
+func (m *Manager) Start(dungeon, notes string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.state == Running {
@@ -80,12 +88,13 @@ func (m *Manager) Start(dungeon string) error {
 	}
 	m.state = Running
 	m.dungeon = dungeon
+	m.notes = notes
 	m.startedAt = time.Now()
 	m.endedAt = time.Time{}
 	m.loot = m.loot[:0]
 	m.byItem = map[string]int{}
 	m.counts = map[string]int{}
-	m.publish(Event{Kind: "session_start", Time: m.startedAt, Payload: map[string]string{"dungeon": dungeon}})
+	m.publish(Event{Kind: "session_start", Time: m.startedAt, Payload: map[string]string{"dungeon": dungeon, "notes": notes}})
 	return nil
 }
 
@@ -123,14 +132,12 @@ func (m *Manager) snapshotLocked() Snapshot {
 	out := Snapshot{
 		State:     m.state,
 		Dungeon:   m.dungeon,
+		Notes:     m.notes,
 		StartedAt: m.startedAt,
 		EndedAt:   m.endedAt,
-		Loot:      append([]LootEntry(nil), m.loot...),
+		Loot:      make([]LootEntry, len(m.loot)),
 	}
-	out.Loot = out.Loot[:0]
-	for _, e := range m.loot {
-		out.Loot = append(out.Loot, e)
-	}
+	copy(out.Loot, m.loot)
 	return out
 }
 
@@ -138,6 +145,7 @@ func (m *Manager) snapshotLocked() Snapshot {
 type Snapshot struct {
 	State     State       `json:"state"`
 	Dungeon   string      `json:"dungeon"`
+	Notes     string      `json:"notes,omitempty"`
 	StartedAt time.Time   `json:"started_at"`
 	EndedAt   time.Time   `json:"ended_at"`
 	Loot      []LootEntry `json:"loot"`

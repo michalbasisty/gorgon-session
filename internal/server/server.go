@@ -2,41 +2,56 @@
 package server
 
 import (
+	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/yourname/gorgon-session/internal/cdn"
 	"github.com/yourname/gorgon-session/internal/config"
 	"github.com/yourname/gorgon-session/internal/favor"
 	"github.com/yourname/gorgon-session/internal/logtail"
 	"github.com/yourname/gorgon-session/internal/loot"
 	"github.com/yourname/gorgon-session/internal/session"
+	"github.com/yourname/gorgon-session/internal/trader"
 )
 
 // Server combines all the moving parts reachable over HTTP.
 type Server struct {
-	Cfg     config.Config
-	Sess    *session.Manager
-	Favor   *favor.Engine
-	WebFS   fs.FS // embedded static content (web/ folder, serve at root)
-	Tailer  *logtail.Tailer
-	Parser  *loot.Parser
+	Cfg      config.Config
+	Sess     *session.Manager
+	Favor    *favor.Engine
+	WebFS    fs.FS // embedded static content (web/ folder, serve at root)
+	Tailer   *logtail.Tailer
+	Parser   *loot.Parser
+	Trader   *trader.Manager
+	ItemByID map[int]cdn.Item // item code -> item data
 }
 
 // New wires a Server.
-func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs.FS, tailer *logtail.Tailer, parser *loot.Parser) *Server {
+func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs.FS, tailer *logtail.Tailer, parser *loot.Parser, trader *trader.Manager, items cdn.ItemsFile, ver cdn.Version) *Server {
+	// Build item-by-ID map
+	itemByID := make(map[int]cdn.Item)
+	for _, item := range items {
+		itemByID[item.ItemID] = item
+	}
+
 	return &Server{
-		Cfg:    cfg,
-		Sess:   sess,
-		Favor:  favor,
-		WebFS:  webFS,
-		Tailer: tailer,
-		Parser: parser,
+		Cfg:      cfg,
+		Sess:     sess,
+		Favor:    favor,
+		WebFS:    webFS,
+		Tailer:   tailer,
+		Parser:   parser,
+		Trader:   trader,
+		ItemByID: itemByID,
 	}
 }
 
@@ -52,6 +67,7 @@ func (s *Server) Mount() http.Handler {
 	mux.HandleFunc("/api/feed", s.handleFeed)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/npcs", s.handleNPCs)
+	mux.HandleFunc("/api/traders", s.handleTraders)
 	mux.HandleFunc("/", s.handleStatic)
 	return mux
 }
@@ -90,15 +106,16 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.Sess.Snapshot())
 }
 
-// handleStart: POST {dungeon} starts a fresh session.
+// handleStart: POST {dungeon, notes} starts a fresh session.
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Dungeon string `json:"dungeon"`
+		Notes   string `json:"notes"`
 	}
 	if r.Method == http.MethodPost {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
-	if err := s.Sess.Start(body.Dungeon); err != nil {
+	if err := s.Sess.Start(body.Dungeon, body.Notes); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
@@ -169,9 +186,11 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost || r.Method == http.MethodPut {
 		var req struct {
-			ChatLogDir         string  `json:"chat_log_dir"`
-			LootRegex          string  `json:"loot_regex"`
-			SellValueThreshold float64 `json:"sell_value_threshold"`
+			ChatLogDir          string             `json:"chat_log_dir"`
+			LootRegex           string             `json:"loot_regex"`
+			SellValueThreshold  float64            `json:"sell_value_threshold"`
+			PlayerPrices        map[string]float64 `json:"player_prices"`
+			NotificationThreshold float64          `json:"notification_threshold"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -182,6 +201,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		s.Cfg.ChatLogDir = req.ChatLogDir
 		s.Cfg.LootRegex = req.LootRegex
 		s.Cfg.SellValueThreshold = req.SellValueThreshold
+		s.Cfg.NotificationThreshold = req.NotificationThreshold
+		if req.PlayerPrices != nil {
+			s.Cfg.PlayerPrices = req.PlayerPrices
+		}
 
 		// Save to disk
 		if err := config.Save(s.Cfg); err != nil {
@@ -196,6 +219,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if s.Parser != nil {
 			_ = s.Parser.SetRegex(req.LootRegex)
 		}
+		if s.Favor != nil && req.PlayerPrices != nil {
+			s.Favor.SetPlayerPrices(req.PlayerPrices)
+		}
 
 		writeJSON(w, map[string]any{"ok": true})
 		return
@@ -203,14 +229,16 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	c := s.Cfg
 	writeJSON(w, map[string]any{
-		"http_addr":            c.HTTPAddr,
-		"chat_log_dir":         c.ChatLogDir,
-		"loot_regex":           c.LootRegex,
-		"cdn_root":             c.CDNRoot,
-		"fallback_version":     c.FallbackVersion,
-		"cache_dir":            c.CacheDir,
-		"report_dir":           c.ReportDir,
-		"sell_value_threshold": c.SellValueThreshold,
+		"http_addr":              c.HTTPAddr,
+		"chat_log_dir":           c.ChatLogDir,
+		"loot_regex":             c.LootRegex,
+		"cdn_root":               c.CDNRoot,
+		"fallback_version":       c.FallbackVersion,
+		"cache_dir":              c.CacheDir,
+		"report_dir":             c.ReportDir,
+		"sell_value_threshold":   c.SellValueThreshold,
+		"player_prices":          c.PlayerPrices,
+		"notification_threshold": c.NotificationThreshold,
 	})
 }
 
@@ -232,6 +260,7 @@ func (s *Server) handleNPCs(w http.ResponseWriter, r *http.Request) {
 type SessionSummary struct {
 	ID            string    `json:"id"`
 	Dungeon       string    `json:"dungeon"`
+	Notes         string    `json:"notes,omitempty"`
 	StartedAt     time.Time `json:"started_at"`
 	EndedAt       time.Time `json:"ended_at"`
 	DurationSecs  int       `json:"duration_secs"`
@@ -283,6 +312,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		summary := SessionSummary{
 			ID:           strings.TrimSuffix(file.Name(), ".json"),
 			Dungeon:      snapshot.Dungeon,
+			Notes:        snapshot.Notes,
 			StartedAt:    snapshot.StartedAt,
 			EndedAt:      snapshot.EndedAt,
 			DurationSecs: int(snapshot.EndedAt.Sub(snapshot.StartedAt).Seconds()),
@@ -325,14 +355,20 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, sessions)
 }
 
-// handleSessionByID: GET details of a specific past session.
+// handleSessionByID: GET details of a specific past session, or GET /export for CSV.
 func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	sessionID := strings.TrimPrefix(r.URL.Path, "/api/session/")
+	path := strings.TrimPrefix(r.URL.Path, "/api/session/")
+	if strings.HasSuffix(path, "/export") {
+		s.handleSessionExport(w, r)
+		return
+	}
+
+	sessionID := path
 	if sessionID == "" {
 		http.Error(w, "session ID required", http.StatusBadRequest)
 		return
@@ -358,4 +394,164 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, snapshot)
+}
+
+// handleSessionExport: GET CSV export of a specific past session.
+func (s *Server) handleSessionExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessionID := strings.TrimPrefix(r.URL.Path, "/api/session/")
+	sessionID = strings.TrimSuffix(sessionID, "/export")
+	if sessionID == "" {
+		http.Error(w, "session ID required", http.StatusBadRequest)
+		return
+	}
+
+	reportDir := s.Cfg.ReportDir
+	if reportDir == "" {
+		http.Error(w, "report directory not configured", http.StatusInternalServerError)
+		return
+	}
+
+	filePath := filepath.Join(reportDir, sessionID+".json")
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	var snapshot session.Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		http.Error(w, "failed to parse session", http.StatusInternalServerError)
+		return
+	}
+
+	// Generate CSV
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s.csv", sessionID))
+	
+	writer := csv.NewWriter(w)
+	defer writer.Flush()
+	
+	// Write header
+	writer.Write([]string{"name", "item_id", "value", "count", "bonus", "first_seen", "last_seen", "verdict", "sell_reason", "player_price"})
+	
+	// Write data rows
+	for _, loot := range snapshot.Loot {
+		writer.Write([]string{
+			loot.Name,
+			strconv.Itoa(loot.ItemID),
+			strconv.FormatFloat(loot.Valor, 'f', -1, 64),
+			strconv.Itoa(loot.Count),
+			strconv.FormatBool(loot.Bonus),
+			loot.FirstSeen.Format(time.RFC3339),
+			loot.LastSeen.Format(time.RFC3339),
+			string(loot.Decision.Verdict),
+			loot.Decision.SellReason,
+			strconv.FormatFloat(loot.Decision.PlayerPrice, 'f', -1, 64),
+		})
+	}
+}
+
+// handleTraders: GET/POST/DELETE trader management.
+func (s *Server) handleTraders(w http.ResponseWriter, r *http.Request) {
+	if s.Trader == nil {
+		writeJSON(w, []any{})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		// Get all traders with reset time
+		traders := s.Trader.GetAll()
+		type TraderResponse struct {
+			*trader.Trader
+			TimeUntilReset string `json:"time_until_reset"`
+		}
+		responses := make([]TraderResponse, len(traders))
+		for i, t := range traders {
+			duration := s.Trader.TimeUntilReset(t.NPCName)
+			responses[i] = TraderResponse{
+				Trader:         t,
+				TimeUntilReset: trader.FormatDuration(duration),
+			}
+		}
+		writeJSON(w, responses)
+
+	case http.MethodPost:
+		// Add trader or log sale
+		var req struct {
+			Action     string  `json:"action"` // "add", "log_sale", or "update"
+			NPCName    string  `json:"npc_name"`
+			Area       string  `json:"area"`
+			WeeklyLimit float64 `json:"weekly_limit"`
+			Amount     float64 `json:"amount"`
+			ResetDays  int     `json:"reset_days"`
+			ResetHours int     `json:"reset_hours"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		switch req.Action {
+		case "add":
+			if err := s.Trader.Add(req.NPCName, req.Area, req.WeeklyLimit, req.ResetDays, req.ResetHours); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := s.Trader.Save(); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, map[string]any{"ok": true})
+
+		case "log_sale":
+			if err := s.Trader.LogSale(req.NPCName, req.Amount); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := s.Trader.Save(); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, map[string]any{"ok": true})
+
+		case "update":
+			if err := s.Trader.Update(req.NPCName, req.Area, req.WeeklyLimit, req.ResetDays, req.ResetHours); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := s.Trader.Save(); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, map[string]any{"ok": true})
+
+		default:
+			http.Error(w, "invalid action", http.StatusBadRequest)
+		}
+
+	case http.MethodDelete:
+		// Remove trader
+		var req struct {
+			NPCName string `json:"npc_name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.Trader.Remove(req.NPCName)
+		if err := s.Trader.Save(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
