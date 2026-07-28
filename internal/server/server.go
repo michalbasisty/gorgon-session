@@ -20,6 +20,7 @@ import (
 	"github.com/michalbasisty/gorgon-session/internal/favor"
 	"github.com/michalbasisty/gorgon-session/internal/logtail"
 	"github.com/michalbasisty/gorgon-session/internal/loot"
+	"github.com/michalbasisty/gorgon-session/internal/prices"
 	"github.com/michalbasisty/gorgon-session/internal/session"
 	"github.com/michalbasisty/gorgon-session/internal/trader"
 )
@@ -34,6 +35,7 @@ type Server struct {
 	Parser   *loot.Parser
 	Trader   *trader.Manager
 	ItemByID map[int]cdn.Item // item code -> item data
+	Prices   *prices.Store    // item price history
 
 	sessionsMu     sync.RWMutex
 	sessionsCache  []SessionSummary
@@ -48,6 +50,10 @@ func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs
 		itemByID[item.ItemID] = item
 	}
 
+	// Price history store lives next to reports
+	pricesPath := filepath.Join(cfg.ReportDir, "price-history.json")
+	pricesStore := prices.New(pricesPath)
+
 	return &Server{
 		Cfg:      cfg,
 		Sess:     sess,
@@ -57,6 +63,7 @@ func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs
 		Parser:   parser,
 		Trader:   trader,
 		ItemByID: itemByID,
+		Prices:   pricesStore,
 	}
 }
 
@@ -73,8 +80,27 @@ func (s *Server) Mount() http.Handler {
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/npcs", s.handleNPCs)
 	mux.HandleFunc("/api/traders", s.handleTraders)
+	mux.HandleFunc("/api/export", s.handleExport)
+	mux.HandleFunc("/api/import", s.handleImport)
+	mux.HandleFunc("/api/items", s.handleItems)
+	mux.HandleFunc("/api/prices", s.handlePrices)
+	mux.HandleFunc("/api/prices/", s.handlePriceByName)
+	mux.HandleFunc("/api/sessions/bulk-export", s.handleBulkExport)
+	mux.HandleFunc("/overlay", s.handleOverlay)
 	mux.HandleFunc("/", s.handleStatic)
 	return mux
+}
+
+// handleOverlay serves the game overlay HUD page.
+func (s *Server) handleOverlay(w http.ResponseWriter, r *http.Request) {
+	b, err := fs.ReadFile(s.WebFS, "overlay.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(b)
 }
 
 // handleStatic serves embedded dashboard assets by bare filename; "/" -> "index.html".
@@ -146,11 +172,21 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Record price history from the stopped session
+	snap := s.Sess.Snapshot()
+	if s.Prices != nil {
+		batch := map[string]struct{ Price, Count float64 }{}
+		for _, loot := range snap.Loot {
+			batch[loot.Name] = struct{ Price, Count float64 }{loot.Valor, float64(loot.Count)}
+		}
+		s.Prices.AddBatch(batch)
+		_ = s.Prices.Save()
+	}
 	// Invalidate session list cache
 	s.sessionsMu.Lock()
 	s.sessionsCached = false
 	s.sessionsMu.Unlock()
-	writeJSON(w, s.Sess.Snapshot())
+	writeJSON(w, snap)
 }
 
 // handleLoot: GET current loot, POST manual entry, DELETE remove entry.
@@ -759,4 +795,131 @@ func (s *Server) ItemByName(name string) struct {
 		ItemName string
 		Item     cdn.Item
 	}{name, cdn.Item{Name: name}}
+}
+
+// handleBulkExport: POST a list of session IDs, returns a downloadable JSON bundle.
+func (s *Server) handleBulkExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(req.IDs) == 0 {
+		http.Error(w, "no session IDs provided", http.StatusBadRequest)
+		return
+	}
+	type sessExport struct {
+		ID      string           `json:"id"`
+		Session session.Snapshot `json:"session"`
+	}
+	var sessions []sessExport
+	reportDir := s.Cfg.ReportDir
+	for _, id := range req.IDs {
+		filePath := filepath.Join(reportDir, id+".json")
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+		var snap session.Snapshot
+		if err := json.Unmarshal(data, &snap); err != nil {
+			continue
+		}
+		sessions = append(sessions, sessExport{ID: id, Session: snap})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=gorgon-sessions-export-%d.json", len(sessions)))
+	json.NewEncoder(w).Encode(map[string]any{"sessions": sessions})
+}
+
+// handleExport: GET all config + settings as a downloadable JSON bundle.
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	export := map[string]any{
+		"config":                s.Cfg,
+		"version":               "1",
+		"exported_at":           time.Now().Format(time.RFC3339),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", "attachment; filename=gorgon-session-export.json")
+	json.NewEncoder(w).Encode(export)
+}
+
+// handleImport: POST a JSON bundle to restore config + settings.
+func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Config config.Config `json:"config"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid import data: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Restore config
+	s.Cfg = body.Config
+	if err := config.Save(s.Cfg); err != nil {
+		http.Error(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if s.Favor != nil {
+		s.Favor.SetPlayerPrices(s.Cfg.PlayerPrices)
+	}
+	writeJSON(w, map[string]any{"ok": true, "message": "Settings imported successfully"})
+}
+
+// handleItems: GET all CDN items for the item catalog.
+func (s *Server) handleItems(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Convert itemByID map to a flat list
+	var items []cdn.Item
+	for _, item := range s.ItemByID {
+		items = append(items, item)
+	}
+	writeJSON(w, items)
+}
+
+// handlePrices: GET price summary for all items.
+func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.Prices == nil {
+		writeJSON(w, map[string]any{})
+		return
+	}
+	writeJSON(w, s.Prices.Summarize())
+}
+
+// handlePriceByName: GET price entries for a specific item.
+func (s *Server) handlePriceByName(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/api/prices/")
+	if name == "" {
+		http.Error(w, "item name required", http.StatusBadRequest)
+		return
+	}
+	if s.Prices == nil {
+		writeJSON(w, []any{})
+		return
+	}
+	writeJSON(w, s.Prices.Get(name))
 }

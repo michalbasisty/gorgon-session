@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -154,6 +155,25 @@ func main() {
 		}
 	}()
 
+	// Auto-backup: every 60 minutes, copy config + reports to backup dir
+	backupDir := filepath.Join(filepath.Dir(cfg.ReportDir), "backups")
+	_ = os.MkdirAll(backupDir, 0o755)
+	go func() {
+		ticker := time.NewTicker(60 * time.Minute)
+		defer ticker.Stop()
+		// Also do one initial backup 30s after startup
+		time.Sleep(30 * time.Second)
+		backupOnce(cfg, backupDir)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				backupOnce(cfg, backupDir)
+			}
+		}
+	}()
+
 	// Open browser after a short delay to let server start
 	go func() {
 		time.Sleep(500 * time.Millisecond)
@@ -183,6 +203,74 @@ func main() {
 	defer shutCancel()
 	_ = hs.Shutdown(shutCtx)
 	cancel()
+}
+
+// backupOnce copies config + session reports to the backup directory.
+func backupOnce(cfg config.Config, backupDir string) {
+	ts := time.Now().Format("20060102-150405")
+	bDir := filepath.Join(backupDir, ts)
+	if err := os.MkdirAll(bDir, 0o755); err != nil {
+		log.Printf("backup: mkdir %s: %v", bDir, err)
+		return
+	}
+
+	// Copy config file
+	cfgPath, err := config.Path()
+	if err == nil {
+		copyFile(cfgPath, filepath.Join(bDir, "config.json"))
+	}
+
+	// Copy session reports
+	entries, err := os.ReadDir(cfg.ReportDir)
+	if err == nil {
+		reportBackup := filepath.Join(bDir, "reports")
+		_ = os.MkdirAll(reportBackup, 0o755)
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+				_ = copyFile(filepath.Join(cfg.ReportDir, e.Name()), filepath.Join(reportBackup, e.Name()))
+			}
+		}
+	}
+	log.Printf("backup saved to %s", bDir)
+
+	// Prune old backups (keep last 48)
+	pruneOldBackups(backupDir, 48)
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
+func pruneOldBackups(dir string, keep int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	// Filter directories with timestamp names (YYYYMMDD-HHMMSS)
+	var dirs []os.DirEntry
+	for _, e := range entries {
+		if e.IsDir() && len(e.Name()) == 15 { // "20260728-120000" = 15 chars
+			dirs = append(dirs, e)
+		}
+	}
+	if len(dirs) <= keep {
+		return
+	}
+	// Sort by name (which is timestamp-sorted)
+	for i := 0; i < len(dirs)-keep; i++ {
+		_ = os.RemoveAll(filepath.Join(dir, dirs[i].Name()))
+	}
 }
 
 // itemIndex is a case-insensitive name lookup over items.

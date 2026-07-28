@@ -11,7 +11,7 @@ function toast(msg, type) {
 
 const state = { 
   session: null, 
-  currentView: 'tracker', 
+  currentView: 'dashboard', 
   summarySortMode: 'npc', 
   npcs: [], 
   disabledNPCs: new Set(), 
@@ -25,7 +25,8 @@ const state = {
   hiddenTraders: new Set(),
   showHiddenOnly: false,
   prioritizedNPCs: new Set(),
-  notificationThreshold: 500
+  notificationThreshold: 500,
+  priceHistory: {} // item name → { average, last, count }
 };
 const tbody = $('#loot tbody');
 const stateEl = $('#state');
@@ -138,31 +139,37 @@ $$('.nav-item').forEach(item => {
 function switchView(view) {
   state.currentView = view;
   $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === view));
+  $('#view-dashboard').classList.toggle('hidden', view !== 'dashboard');
   $('#view-tracker').classList.toggle('hidden', view !== 'tracker');
   $('#view-summary').classList.toggle('hidden', view !== 'summary');
   $('#view-history').classList.toggle('hidden', view !== 'history');
   $('#view-history-detail').classList.toggle('hidden', view !== 'history-detail');
   $('#view-favor').classList.toggle('hidden', view !== 'favor');
   $('#view-traders').classList.toggle('hidden', view !== 'traders');
+  $('#view-items').classList.toggle('hidden', view !== 'items');
   $('#view-warcache').classList.toggle('hidden', view !== 'warcache');
   $('#view-settings').classList.toggle('hidden', view !== 'settings');
 
   const titles = { 
+    dashboard: 'Dashboard',
     tracker: 'Tracker', 
     summary: 'Summary', 
     history: 'History',
     'history-detail': 'Session Details',
     favor: 'Favor Progress',
     traders: 'Shops & Traders',
+    items: 'Item Catalog',
     warcache: 'Warcache Solver',
     settings: 'Settings'
   };
   $('#view-title').innerHTML = `${titles[view]} <small id="state">${state.session?.state || 'idle'}</small>`;
 
+  if (view === 'dashboard') renderDashboard();
   if (view === 'summary' && state.session) renderSummary(state.session);
   if (view === 'history') renderHistory();
   if (view === 'favor') renderFavorView();
   if (view === 'traders') { loadTraderCapacity().then(() => renderTradersView()); }
+  if (view === 'items') renderItemsView();
   if (view === 'warcache') renderWarcacheView();
   if (view === 'settings') renderSettingsView();
 }
@@ -175,6 +182,9 @@ function renderSession(s) {
     stateBadge.textContent = s.state;
     stateBadge.className = s.state;
   }
+  // Sidebar status badge
+  const sb = $('#status-badge');
+  if (sb) { sb.textContent = s.state; sb.className = 'session-badge ' + s.state; }
   $('#start').disabled = s.state === 'running';
   $('#stop').disabled = s.state !== 'running';
   if (s.dungeon && $('#dungeon').value === '' && s.state !== 'idle') $('#dungeon').value = s.dungeon;
@@ -188,11 +198,45 @@ function renderSession(s) {
   }
 
   renderLootTable(s);
+  renderTrackerNotes(s);
 
   if (state.currentView === 'summary') {
     renderSummary(s);
   }
+  if (state.currentView === 'dashboard') {
+    renderDashboard();
+  }
 }
+
+function renderTrackerNotes(s) {
+  const el = $('#tracker-notes');
+  if (!el) return;
+  if (s.state !== 'running') { el.innerHTML = ''; return; }
+  const text = s.notes || '';
+  el.innerHTML = text
+    ? `<span class="notes-text">📝 ${escapeHtml(text)}</span><button class="notes-edit-btn" onclick="editTrackerNotes()">✏️</button>`
+    : `<span class="notes-empty">No session notes</span><button class="notes-edit-btn" onclick="editTrackerNotes()">✏️</button>`;
+}
+
+window.editTrackerNotes = function() {
+  const el = $('#tracker-notes');
+  if (!el) return;
+  const current = state.session?.notes || '';
+  el.innerHTML = `<input class="notes-edit-input" id="tracker-notes-input" value="${escapeHtml(current)}" placeholder="session notes...">
+    <button class="notes-save-btn" onclick="saveTrackerNotes()">Save</button>
+    <button class="notes-cancel-btn" onclick="renderTrackerNotes(state.session)">Cancel</button>`;
+  $('#tracker-notes-input').focus();
+};
+
+window.saveTrackerNotes = async function() {
+  const notes = $('#tracker-notes-input')?.value || '';
+  const s = await api('/api/session', 'PATCH', { notes });
+  if (s) {
+    state.session = s;
+    toast('Notes saved', 'success');
+    renderTrackerNotes(s);
+  }
+};
 
 function renderLootTable(s) {
   tbody.innerHTML = '';
@@ -233,26 +277,34 @@ window.deleteLootItem = async function(name) {
   if (res) refreshAll();
 };
 function routeText(d) {
+  let base = '';
   if (d.verdict === 'favor') {
     let targets = (d.favor_targets || []).filter(t => !state.disabledNPCs.has(t.npc));
-    if (!targets.length) return 'no available NPC';
-    // Sort: prioritized NPCs first
-    targets = [...targets].sort((a, b) => {
-      const aPri = state.prioritizedNPCs.has(a.npc) ? 0 : 1;
-      const bPri = state.prioritizedNPCs.has(b.npc) ? 0 : 1;
-      return aPri - bPri || b.score - a.score;
-    });
-    return targets.map(t => {
-      const cap = state.traderCapacity[t.npc];
-      const broke = cap && cap.remaining <= 0 && cap.limit > 0;
-      const pri = state.prioritizedNPCs.has(t.npc) ? '★ ' : '';
-      return `${pri}${t.npc} (${t.area}) +${t.score}${broke ? ' ⚠ 0g' : ''}`;
-    }).join(' · ') || 'gift';
+    if (!targets.length) base = 'no available NPC';
+    else {
+      targets = [...targets].sort((a, b) => {
+        const aPri = state.prioritizedNPCs.has(a.npc) ? 0 : 1;
+        const bPri = state.prioritizedNPCs.has(b.npc) ? 0 : 1;
+        return aPri - bPri || b.score - a.score;
+      });
+      base = targets.map(t => {
+        const cap = state.traderCapacity[t.npc];
+        const broke = cap && cap.remaining <= 0 && cap.limit > 0;
+        const pri = state.prioritizedNPCs.has(t.npc) ? '★ ' : '';
+        return `${pri}${t.npc} (${t.area}) +${t.score}${broke ? ' ⚠ 0g' : ''}`;
+      }).join(' · ') || 'gift';
+    }
+  } else if (d.player_price) {
+    base = `player price: ${d.player_price.toFixed(0)}g`;
+  } else {
+    base = d.sell_reason || '';
   }
-  if (d.player_price) {
-    return `player price: ${d.player_price.toFixed(0)}g`;
+  // Append price history if available
+  const ph = state.priceHistory?.[d.name];
+  if (ph && ph.count > 1) {
+    base += ` <span class="price-hint">avg ${ph.average.toFixed(0)}g · med ${ph.median.toFixed(0)}g</span>`;
   }
-  return d.sell_reason || '';
+  return base;
 }
 
 // Controls
@@ -312,9 +364,325 @@ function showRareLootNotification(loot) {
   }
 }
 
+let itemsCache = null;
+async function renderItemsView() {
+  const container = $('#items-list');
+  if (!container) return;
+  const search = ($('#items-search')?.value || '').toLowerCase();
+  if (!itemsCache) {
+    container.innerHTML = '<div class="summary-empty">Loading items...</div>';
+    itemsCache = await api('/api/items');
+    if (!itemsCache) { container.innerHTML = '<div class="summary-empty">Failed to load items</div>'; return; }
+  }
+
+  const filtered = search ? itemsCache.filter(i => (i.Name || '').toLowerCase().includes(search) || (i.Keywords || []).some(k => k.toLowerCase().includes(search))) : itemsCache;
+  $('#items-count').textContent = `${filtered.length} item${filtered.length !== 1 ? 's' : ''} (${itemsCache.length} total)`;
+
+  container.innerHTML = '';
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="summary-empty">No items match your search</div>';
+    return;
+  }
+
+  for (const item of filtered.slice(0, 500)) {
+    const card = document.createElement('div');
+    card.className = 'item-card';
+    card.innerHTML = `<div class="item-card-name">${escapeHtml(item.Name || 'Unknown')}</div>
+      <div class="item-card-id">#${item.ItemID || '?'}</div>
+      <div class="item-card-value">${item.Value || 0}g</div>
+      ${item.Keywords?.length ? `<div class="item-card-keywords">${item.Keywords.slice(0, 3).map(k => '<span class="item-tag">' + escapeHtml(k) + '</span>').join(' ')}</div>` : ''}`;
+    container.appendChild(card);
+  }
+  if (filtered.length > 500) {
+    const more = document.createElement('div');
+    more.className = 'summary-empty';
+    more.textContent = `+ ${filtered.length - 500} more items (narrow your search)`;
+    container.appendChild(more);
+  }
+}
+
+// Items search
+$('#items-search')?.addEventListener('input', () => {
+  if (state.currentView === 'items') renderItemsView();
+});
+
 async function refreshAll() {
   const s = await api('/api/session');
   renderSession(s);
+  // Load price history
+  const ph = await api('/api/prices');
+  if (ph) state.priceHistory = ph;
+}
+
+function defaultDashLayout() {
+  return [
+    { type: 'quick-stats', title: 'Quick Stats', size: 'full', visible: true },
+    { type: 'session-status', title: 'Session', size: 'half', visible: true },
+    { type: 'recent-sessions', title: 'Recent Sessions', size: 'half', visible: true },
+    { type: 'value-chart', title: 'Value Trend', size: 'half', visible: true },
+    { type: 'favor-chart', title: 'Favor Trend', size: 'half', visible: true },
+  ];
+}
+function loadDashLayout() {
+  try { return JSON.parse(localStorage.getItem('dashLayout') || 'null') || defaultDashLayout(); }
+  catch { return defaultDashLayout(); }
+}
+function saveDashLayout() { localStorage.setItem('dashLayout', JSON.stringify(state.dashLayout)); }
+
+/* widget renderers — each takes (widgetConfig, sessions) and returns HTML string or appends to parent */
+const widgetRenderers = {};
+
+widgetRenderers['quick-stats'] = function(w, sessions) {
+  const totalSessions = sessions.length;
+  const totalValue = sessions.reduce((s, s2) => s + s2.total_value, 0);
+  const totalFavor = sessions.reduce((s, s2) => s + (s2.favor_items || 0), 0);
+  const totalSell = sessions.reduce((s, s2) => s + (s2.sell_items || 0), 0);
+  return `<div class="dashboard-stats">
+    <div class="stat-card"><div class="stat-label">Total Sessions</div><div class="stat-value">${totalSessions}</div></div>
+    <div class="stat-card"><div class="stat-label">Total Loot Value</div><div class="stat-value">${totalValue.toFixed(0)}g</div></div>
+    <div class="stat-card"><div class="stat-label">Items Favor</div><div class="stat-value">${totalFavor}</div></div>
+    <div class="stat-card"><div class="stat-label">Items Sell</div><div class="stat-value">${totalSell}</div></div>
+  </div>`;
+};
+
+widgetRenderers['session-status'] = function(w, sessions) {
+  const info = state.session;
+  if (info && info.state === 'running') {
+    const elapsed = fmtElapsed(Date.now() - new Date(info.started_at).getTime());
+    return `<div class="dash-info-box"><div class="dash-active">
+      <div><div class="dash-dungeon">${escapeHtml(info.dungeon || 'unnamed')}</div>
+      <div class="dash-elapsed">Started ${new Date(info.started_at).toLocaleTimeString()} · ${elapsed}</div></div>
+      <div><span class="session-badge running">Running</span></div>
+    </div></div>`;
+  }
+  if (info && info.state === 'stopped') {
+    return `<div class="dash-info-box"><div class="dash-active">
+      <div><div class="dash-dungeon">${escapeHtml(info.dungeon || 'unnamed')}</div>
+      <div class="dash-elapsed">Ended ${new Date(info.ended_at).toLocaleTimeString()}</div></div>
+      <div><span class="session-badge stopped">Stopped</span></div>
+    </div></div>`;
+  }
+  return '<div class="dash-info-box"><span class="muted">No active session</span></div>';
+};
+
+widgetRenderers['recent-sessions'] = function(w, sessions) {
+  const list = sessions.slice(0, 8);
+  if (list.length === 0) return '<div class="dash-recent-list"><div class="summary-empty">No sessions yet</div></div>';
+  let html = '<div class="dash-recent-list">';
+  for (const s of list) {
+    const date = new Date(s.started_at);
+    const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour12: false, hour: '2-digit', minute: '2-digit'});
+    html += `<div class="dash-recent-item" onclick="switchView('history');if(typeof loadSessionDetail==='function')loadSessionDetail('${s.id}')">
+      <div><div class="dash-item-dungeon">${escapeHtml(s.dungeon)}</div>
+      <div class="dash-item-meta">${dateStr} · ${s.total_items} items</div></div>
+      <div class="dash-item-value">${s.total_value.toFixed(0)}g</div>
+    </div>`;
+  }
+  html += '</div>';
+  return html;
+};
+
+widgetRenderers['value-chart'] = function(w, sessions) {
+  // defer to canvas renderer — return a placeholder canvas
+  return `<canvas id="value-chart" height="160" style="width:100%;border-radius:var(--radius);background:var(--row);border:1px solid var(--border);box-shadow:var(--shadow)"></canvas>`;
+};
+
+widgetRenderers['favor-chart'] = function(w, sessions) {
+  return `<canvas id="favor-chart" height="160" style="width:100%;border-radius:var(--radius);background:var(--row);border:1px solid var(--border);box-shadow:var(--shadow)"></canvas>`;
+};
+
+widgetRenderers['trader-alerts'] = function(w, sessions) {
+  const caps = state.traderCapacity || {};
+  const alerts = Object.entries(caps)
+    .filter(([_, c]) => c.limit > 0 && c.remaining <= 0)
+    .sort((a, b) => a[1].remaining - b[1].remaining);
+  if (alerts.length === 0) return '<div class="dash-info-box"><span class="muted">No trader alerts</span></div>';
+  let html = '<div class="dash-recent-list">';
+  for (const [name, cap] of alerts) {
+    html += `<div class="dash-recent-item" style="cursor:default">
+      <div><div class="dash-item-dungeon">${escapeHtml(name)}</div>
+      <div class="dash-item-meta">Reset: ${cap.reset || '?'}</div></div>
+      <div class="dash-item-value" style="color:#e74c3c">0g left</div>
+    </div>`;
+  }
+  html += '</div>';
+  return html;
+};
+
+widgetRenderers['top-items'] = function(w, sessions) {
+  // Count top items across all sessions
+  const counts = {};
+  for (const s of sessions) {
+    if (!s.total_value && s.favor_items === undefined) continue;
+    // We don't have per-item breakdown in summary, so show a simple stat
+  }
+  // Show recent high-value sessions instead as a simple stat
+  const top = [...sessions].sort((a, b) => b.total_value - a.total_value).slice(0, 5);
+  if (top.length === 0) return '<div class="dash-info-box"><span class="muted">No data yet</span></div>';
+  let html = '<div class="dash-recent-list">';
+  for (const s of top) {
+    const date = new Date(s.started_at);
+    const dateStr = date.toLocaleDateString();
+    html += `<div class="dash-recent-item" style="cursor:default">
+      <div><div class="dash-item-dungeon">${escapeHtml(s.dungeon)}</div>
+      <div class="dash-item-meta">${dateStr} · ${s.total_items} items</div></div>
+      <div class="dash-item-value">${s.total_value.toFixed(0)}g</div>
+    </div>`;
+  }
+  html += '</div>';
+  return html;
+};
+
+async function renderDashboard() {
+  const sessions = await api('/api/sessions');
+  if (!sessions) return;
+
+  state.dashLayout = loadDashLayout();
+  const container = $('#dash-widgets');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const visible = state.dashLayout.filter(w => w.visible);
+  if (visible.length === 0) {
+    container.innerHTML = '<div class="summary-empty">All widgets hidden. Click ⚙ to customize.</div>';
+    return;
+  }
+
+  for (const widget of visible) {
+    const fn = widgetRenderers[widget.type];
+    if (!fn) continue;
+    const el = document.createElement('div');
+    el.className = `dash-widget size-${widget.size || 'half'}`;
+    el.innerHTML = `<div class="dash-widget-header"><span class="dash-widget-title">${escapeHtml(widget.title)}</span></div>
+      <div class="dash-widget-body" id="dw-${widget.type}"></div>`;
+    container.appendChild(el);
+
+    const body = el.querySelector('.dash-widget-body');
+    body.innerHTML = fn(widget, sessions);
+
+    // After rendering, draw charts for canvas widgets
+    if (widget.type === 'value-chart' || widget.type === 'favor-chart') {
+      const recentSessions = sessions.slice(0, 8);
+      if (widget.type === 'value-chart') renderBarChart('#value-chart', recentSessions, s => s.total_value, '#5b93ff', '#2ecc71');
+      if (widget.type === 'favor-chart') renderBarChart('#favor-chart', recentSessions, s => s.favor_items, '#e67e22', '#f1c40f');
+    }
+  }
+}
+
+function renderBarChart(canvasId, sessions, extract, colorA, colorB) {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const w = rect.width;
+  const h = rect.height;
+
+  ctx.clearRect(0, 0, w, h);
+  if (sessions.length === 0) {
+    ctx.fillStyle = '#7a7f8a';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('No session data yet', w/2, h/2);
+    return;
+  }
+
+  const values = sessions.map(s => extract(s)).reverse();
+  const max = Math.max(...values, 1);
+  const pad = { t: 8, r: 8, b: 20, l: 8 };
+  const chartW = w - pad.l - pad.r;
+  const chartH = h - pad.t - pad.b;
+  const barW = Math.min(24, chartW / values.length - 4);
+
+  ctx.fillStyle = '#1e2128';
+  ctx.fillRect(0, 0, w, h);
+
+  for (let i = 0; i < values.length; i++) {
+    const barH = (values[i] / max) * chartH;
+    const x = pad.l + i * (chartW / values.length) + (chartW / values.length - barW) / 2;
+    const y = pad.t + chartH - barH;
+    const gradient = ctx.createLinearGradient(x, y, x, pad.t + chartH);
+    gradient.addColorStop(0, colorA);
+    gradient.addColorStop(1, colorB);
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.roundRect(x, y, barW, barH, [3, 3, 0, 0]);
+    ctx.fill();
+
+    ctx.fillStyle = '#7a7f8a';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(values[i].toFixed(0), x + barW/2, y - 4);
+  }
+}
+
+// Widget settings
+window.toggleDashSettings = function() {
+  const panel = $('#dash-settings');
+  if (!panel) return;
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden')) renderDashWidgetList();
+};
+
+function renderDashWidgetList() {
+  const list = $('#dash-widget-list');
+  if (!list) return;
+  state.dashLayout = loadDashLayout();
+  list.innerHTML = '';
+  state.dashLayout.forEach((w, i) => {
+    const row = document.createElement('div');
+    row.className = 'dash-widget-row';
+    row.innerHTML = `
+      <label class="dash-widget-toggle">
+        <input type="checkbox" ${w.visible ? 'checked' : ''} data-idx="${i}">
+        <span>${escapeHtml(w.title)}</span>
+      </label>
+      <div class="dash-widget-arrows">
+        <button class="dash-arr" data-idx="${i}" data-dir="up" ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button class="dash-arr" data-idx="${i}" data-dir="down" ${i === state.dashLayout.length - 1 ? 'disabled' : ''}>▼</button>
+      </div>`;
+    list.appendChild(row);
+  });
+  list.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const idx = parseInt(cb.dataset.idx);
+      state.dashLayout[idx].visible = cb.checked;
+      saveDashLayout();
+    });
+  });
+  list.querySelectorAll('.dash-arr').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.idx);
+      const dir = btn.dataset.dir;
+      const swap = dir === 'up' ? idx - 1 : idx + 1;
+      if (swap < 0 || swap >= state.dashLayout.length) return;
+      [state.dashLayout[idx], state.dashLayout[swap]] = [state.dashLayout[swap], state.dashLayout[idx]];
+      saveDashLayout();
+      renderDashWidgetList();
+      renderDashboard();
+    });
+  });
+});
+
+// Check canvas roundRect support
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+    if (!Array.isArray(r)) r = [r, r, r, r];
+    const [tl, tr, br, bl] = r.map(v => Math.min(v || 0, Math.min(w, h) / 2));
+    this.moveTo(x + tl, y);
+    this.lineTo(x + w - tr, y);
+    this.quadraticCurveTo(x + w, y, x + w, y + tr);
+    this.lineTo(x + w, y + h - br);
+    this.quadraticCurveTo(x + w, y + h, x + w - br, y + h);
+    this.lineTo(x + bl, y + h);
+    this.quadraticCurveTo(x, y + h, x, y + h - bl);
+    this.lineTo(x, y + tl);
+    this.quadraticCurveTo(x, y, x + tl, y);
+    this.closePath();
+  };
 }
 
 // Ticking elapsed counter

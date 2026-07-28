@@ -8,18 +8,23 @@
 </head>
 <body>
 <div class="app">
-  <nav class="sidebar">
-    <div class="sidebar-header">gorgon-session</div>
-    <ul class="nav-list">
-      <li class="nav-item active" data-view="tracker">Tracker</li>
-      <li class="nav-item" data-view="summary">Summary</li>
-      <li class="nav-item" data-view="history">History</li>
-      <li class="nav-item" data-view="favor">Favor</li>
-      <li class="nav-item" data-view="traders">Shops & Traders</li>
-      <li class="nav-item" data-view="warcache">Warcache</li>
-      <li class="nav-item" data-view="settings">Settings</li>
-    </ul>
-  </nav>
+    <nav class="sidebar">
+      <div class="sidebar-header">gorgon-session</div>
+      <ul class="nav-list">
+        <li class="nav-item" data-view="dashboard">Dashboard</li>
+        <li class="nav-item active" data-view="tracker">Tracker</li>
+        <li class="nav-item" data-view="summary">Summary</li>
+        <li class="nav-item" data-view="history">History</li>
+        <li class="nav-item" data-view="favor">Favor</li>
+        <li class="nav-item" data-view="traders">Shops & Traders</li>
+        <li class="nav-item" data-view="items">Item Catalog</li>
+        <li class="nav-item" data-view="warcache">Warcache</li>
+        <li class="nav-item" data-view="settings">Settings</li>
+      </ul>
+      <div class="sidebar-status">
+        <small id="status-badge" class="session-badge idle">idle</small>
+      </div>
+    </nav>
 
   <div class="main-content">
     <header>
@@ -36,7 +41,10 @@
     <main>
       <!-- Tracker view -->
       <section id="view-tracker">
-        <h2>looted <span id="count" class="badge">0</span></h2>
+        <div class="tracker-header">
+          <h2>looted <span id="count" class="badge">0</span></h2>
+          <div id="tracker-notes" class="tracker-notes"></div>
+        </div>
         <div class="tracker-controls">
           <input id="loot-search" type="text" placeholder="search items..." autocomplete="off">
           <select id="loot-filter">
@@ -65,6 +73,20 @@
             <button id="manual-loot-add">Add</button>
           </div>
         </details>
+      </section>
+
+      <!-- Dashboard view -->
+      <section id="view-dashboard" class="hidden">
+        <div class="dash-header">
+          <h2>Overview</h2>
+          <button class="dash-customize-btn" onclick="toggleDashSettings()">⚙ Widgets</button>
+        </div>
+        <div id="dash-widgets" class="dash-widgets"></div>
+        <div id="dash-settings" class="dash-settings hidden">
+          <h3>Dashboard Widgets</h3>
+          <p class="form-help">Toggle widgets on/off. Drag to reorder (arrows below).</p>
+          <div id="dash-widget-list"></div>
+        </div>
       </section>
 
       <!-- Summary view -->
@@ -114,8 +136,15 @@
             <span id="history-total-sessions">0 sessions</span>
             <span id="history-total-value">0g total</span>
           </div>
-          <div class="settings-search" style="margin-top:8px">
-            <input id="history-search" type="text" placeholder="search by dungeon or notes..." autocomplete="off">
+          <div class="history-toolbar">
+            <div class="settings-search" style="flex:1">
+              <input id="history-search" type="text" placeholder="search by dungeon or notes..." autocomplete="off">
+            </div>
+            <label class="bulk-toggle"><input type="checkbox" id="bulk-toggle"> Select</label>
+            <div id="bulk-actions" class="bulk-actions hidden">
+              <button class="add-btn" id="bulk-export">Export Selected</button>
+              <button class="delete-btn" id="bulk-delete">Delete Selected</button>
+            </div>
           </div>
         </div>
         <div id="history-list"></div>
@@ -156,8 +185,30 @@
           </div>
         </div>
         <div class="history-detail-content">
-          <h3>Items</h3>
-          <div id="history-detail-items-list"></div>
+          <div class="hd-tabs">
+            <button class="hd-tab active" data-tab="summary">Summary</button>
+            <button class="hd-tab" data-tab="items">All Items</button>
+          </div>
+          <div id="hd-panel-summary" class="hd-panel">
+            <div class="summary-grid">
+              <div class="summary-section favor">
+                <h3>🌿 Favor</h3>
+                <div id="hd-favor-list"></div>
+              </div>
+              <div class="summary-section sell">
+                <h3>💰 Sell</h3>
+                <div id="hd-sell-list"></div>
+              </div>
+              <div class="summary-section keep">
+                <h3>📦 Keep</h3>
+                <div id="hd-keep-list"></div>
+              </div>
+            </div>
+          </div>
+          <div id="hd-panel-items" class="hd-panel hidden">
+            <h3>All Items</h3>
+            <div id="history-detail-items-list"></div>
+          </div>
         </div>
       </section>
 
@@ -178,6 +229,16 @@
           <button id="show-hidden-btn" class="filter-btn" onclick="toggleShowHiddenOnly()">👁‍🗨 hidden</button>
         </div>
         <div id="traders-list"></div>
+      </section>
+
+      <!-- Item Catalog view -->
+      <section id="view-items" class="hidden">
+        <h2>Item Catalog</h2>
+        <div class="settings-search">
+          <input id="items-search" type="text" placeholder="search items by name or keyword..." autocomplete="off">
+        </div>
+        <div class="items-count" id="items-count">Loading...</div>
+        <div id="items-list" class="items-grid"></div>
       </section>
 
       <!-- Warcache view -->
@@ -254,6 +315,17 @@
           <span id="settings-status" class="settings-status"></span>
         </form>
 
+        <div class="settings-actions">
+          <h3>Data Management</h3>
+          <div class="settings-actions-row">
+            <button id="export-data" class="add-btn">Download Export</button>
+            <button id="import-data" class="add-btn" style="background:var(--muted)">Import Settings</button>
+            <input type="file" id="import-file" accept=".json" style="display:none">
+            <span id="import-status" class="settings-status"></span>
+          </div>
+          <small class="form-help">Export downloads all settings as JSON. Import restores settings from a previous export file.</small>
+        </div>
+
         <div class="player-prices-section">
           <h3>Player Prices</h3>
           <p class="form-help">Items worth more to other players than the vendor value will route to consignment.</p>
@@ -267,6 +339,16 @@
             <span id="pp-count" class="pp-count">0 items</span>
           </div>
           <div id="pp-list"></div>
+        </div>
+
+        <div class="settings-actions">
+          <h3>Game Overlay</h3>
+          <p class="form-help">The overlay page is designed for OBS Browser Source or a popout window. It sits on top of the game and shows loot + session status in real-time.</p>
+          <div class="settings-actions-row">
+            <button id="open-overlay" class="add-btn">Open Overlay</button>
+            <button id="copy-overlay-url" class="add-btn" style="background:var(--muted)">Copy URL</button>
+          </div>
+          <small class="form-help">URL: <code id="overlay-url">http://localhost:7777/overlay</code></small>
         </div>
       </section>
     </main>

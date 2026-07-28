@@ -138,6 +138,39 @@ $('#pp-search')?.addEventListener('input', (e) => {
   renderPlayerPrices();
 });
 
+// Export/Import
+$('#export-data')?.addEventListener('click', () => {
+  window.location.href = '/api/export';
+  toast('Downloading settings export...', 'info');
+});
+
+$('#import-data')?.addEventListener('click', () => {
+  $('#import-file')?.click();
+});
+
+$('#import-file')?.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const status = $('#import-status');
+  status.textContent = 'Importing...';
+  status.className = 'settings-status';
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    const res = await api('/api/import', 'POST', data);
+    if (res) {
+      status.textContent = res.message || 'Import successful!';
+      status.className = 'settings-status success';
+      // Reload settings view
+      setTimeout(() => renderSettingsView(), 1000);
+    }
+  } catch (err) {
+    status.textContent = 'Import failed: ' + err.message;
+    status.className = 'settings-status error';
+  }
+  e.target.value = '';
+});
+
 // ==================== Warcache Solver ====================
 
 const SYM_LABELS = ['1','2','3','4','5','6','7','8','9','10','11','12'];
@@ -364,6 +397,27 @@ $('#warcache-use-suggestion')?.addEventListener('click', () => {
     warcacheSelectedSlot = 0;
     warcacheRenderGuessSlots();
   }
+});
+
+// Game overlay buttons
+$('#open-overlay')?.addEventListener('click', () => {
+  window.open('/overlay', 'gorgon-overlay', 'width=500,height=600,menubar=no,toolbar=no,resizable=yes');
+});
+
+$('#copy-overlay-url')?.addEventListener('click', () => {
+  const url = window.location.origin + '/overlay';
+  navigator.clipboard.writeText(url).then(() => {
+    toast('Overlay URL copied', 'success');
+  }).catch(() => {
+    // Fallback
+    const ta = document.createElement('textarea');
+    ta.value = url;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+    toast('Overlay URL copied', 'success');
+  });
 });
 
 // Reset

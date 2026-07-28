@@ -4,3 +4,4 @@ dist/
 config.yaml
 cache/
 .sessions/
+.slim/deepwork/
