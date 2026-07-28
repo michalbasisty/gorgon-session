@@ -292,7 +292,21 @@ td.route {
   margin-bottom: 8px;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
+.pri-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--muted);
+  padding: 0;
+  line-height: 1;
+}
+.pri-btn:hover { color: var(--sell-vendor); }
+.pri-btn.active { color: var(--sell-vendor); }
 .summary-group-header.npc {
   color: var(--favor);
 }
@@ -1178,6 +1192,69 @@ td.route {
 }
 
 /* Traders view */
+.section-divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+.shopnpc-section { margin-bottom: 8px; }
+.trader-toggle-bar { padding: 8px 12px; display: flex; align-items: center; gap: 12px; }
+.trader-toggle-bar .toggle-label { font-size: 12px; color: var(--muted); margin-left: 4px; }
+.hide-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.trader-row:hover .hide-btn,
+.trader-area-header:hover .hide-btn {
+  opacity: 1;
+}
+.hide-btn:hover { color: #e74c3c; background: rgba(231,76,60,0.1); }
+.save-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  margin-left: 8px;
+}
+.save-btn:hover { opacity: 0.85; }
+.area-header-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.hidden-section { opacity: 0.7; }
+.hidden-header { font-style: italic; }
+.hidden-item-row { padding: 6px 12px; }
+.hidden-item-row .trader-name { flex: 1; }
+.trader-area-label { font-size: 12px; color: var(--muted); }
+.hidden-type-badge { font-size: 11px; color: var(--muted); background: var(--border); padding: 1px 6px; border-radius: 3px; }
+.unhide-btn {
+  background: none;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  margin-left: auto;
+}
+.unhide-btn:hover { background: var(--accent); color: #fff; }
+.trader-search-bar { display: flex; gap: 8px; align-items: center; }
+.trader-search-bar input { flex: 1; }
+.filter-btn {
+  background: var(--row);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.filter-btn:hover { border-color: var(--accent); color: var(--fg); }
+.filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .traders-controls {
   margin-bottom: 20px;
 }
@@ -1345,9 +1422,6 @@ td.route {
 
 /* Trader rows */
 .trader-row {
-  display: flex;
-  align-items: center;
-  gap: 16px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   font-size: 13px;
@@ -1358,24 +1432,54 @@ td.route {
 .trader-row.unused-warning {
   background: rgba(241, 196, 15, 0.05);
 }
+.trader-row-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.trader-row-bottom {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding-left: 36px;
+}
 .trader-name {
   flex: 0 0 180px;
   font-weight: 600;
 }
-.trader-fields {
+.trader-capacity {
   flex: 1;
   display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
-.trader-fields label {
+.capacity-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.capacity-value {
+  font-weight: 600;
+  color: var(--accent);
+}
+.capacity-value.zeroed {
+  color: #e74c3c;
+}
+.trader-reset {
+  flex: 0 0 150px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.trader-row-bottom label {
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 12px;
   color: var(--muted);
 }
-.trader-fields input {
+.trader-row-bottom input {
   width: 70px;
   padding: 4px 6px;
   background: var(--row);
@@ -1385,16 +1489,9 @@ td.route {
   font: inherit;
   font-size: 12px;
 }
-.trader-fields input:focus {
+.trader-row-bottom input:focus {
   outline: none;
   border-color: var(--accent);
-}
-.trader-status {
-  flex: 0 0 150px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
 }
 .reset-timer {
   color: var(--accent);

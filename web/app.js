@@ -12,6 +12,11 @@ const state = {
   favorProgress: new Set(),
   playerPrices: {},
   traders: [],
+  traderCapacity: {}, // npc_name → { limit, sold, remaining }
+  hiddenAreas: new Set(),
+  hiddenTraders: new Set(),
+  showHiddenOnly: false,
+  prioritizedNPCs: new Set(),
   notificationThreshold: 500
 };
 const tbody = $('#loot tbody');
@@ -33,12 +38,21 @@ function loadSettings() {
     state.favorProgress = new Set(favorProgress);
     const playerPrices = JSON.parse(localStorage.getItem('playerPrices') || '{}');
     state.playerPrices = playerPrices || {};
+    const hiddenAreas = JSON.parse(localStorage.getItem('hiddenAreas') || '[]');
+    state.hiddenAreas = new Set(hiddenAreas);
+    const hiddenTraders = JSON.parse(localStorage.getItem('hiddenTraders') || '[]');
+    state.hiddenTraders = new Set(hiddenTraders);
+    const prioritizedNPCs = JSON.parse(localStorage.getItem('prioritizedNPCs') || '[]');
+    state.prioritizedNPCs = new Set(prioritizedNPCs);
   } catch (e) {
     state.disabledNPCs = new Set();
     state.shopNPCs = [];
     state.craftingRecipes = [];
     state.favorProgress = new Set();
     state.playerPrices = {};
+    state.hiddenAreas = new Set();
+    state.hiddenTraders = new Set();
+    state.prioritizedNPCs = new Set();
   }
 }
 
@@ -48,9 +62,30 @@ function saveSettings() {
   localStorage.setItem('craftingRecipes', JSON.stringify(state.craftingRecipes));
   localStorage.setItem('favorProgress', JSON.stringify([...state.favorProgress]));
   localStorage.setItem('playerPrices', JSON.stringify(state.playerPrices));
+  localStorage.setItem('hiddenAreas', JSON.stringify([...state.hiddenAreas]));
+  localStorage.setItem('hiddenTraders', JSON.stringify([...state.hiddenTraders]));
+  localStorage.setItem('prioritizedNPCs', JSON.stringify([...state.prioritizedNPCs]));
 }
 
 loadSettings();
+
+async function loadTraderCapacity() {
+  const areas = await api('/api/traders');
+  if (!areas) return;
+  const cap = {};
+  for (const area of areas) {
+    for (const npc of area.npcs) {
+      cap[npc.npc_name] = {
+        limit: npc.weekly_limit || 0,
+        sold: npc.sold_this_week || 0,
+        remaining: Math.max(0, (npc.weekly_limit || 0) - (npc.sold_this_week || 0)),
+        reset: npc.time_until_reset || ''
+      };
+    }
+  }
+  state.traderCapacity = cap;
+}
+loadTraderCapacity();
 
 function relTime(t) {
   const d = new Date(t);
@@ -81,7 +116,6 @@ function switchView(view) {
   $('#view-history').classList.toggle('hidden', view !== 'history');
   $('#view-history-detail').classList.toggle('hidden', view !== 'history-detail');
   $('#view-favor').classList.toggle('hidden', view !== 'favor');
-  $('#view-shopnpc').classList.toggle('hidden', view !== 'shopnpc');
   $('#view-traders').classList.toggle('hidden', view !== 'traders');
   $('#view-warcache').classList.toggle('hidden', view !== 'warcache');
   $('#view-settings').classList.toggle('hidden', view !== 'settings');
@@ -92,8 +126,7 @@ function switchView(view) {
     history: 'History',
     'history-detail': 'Session Details',
     favor: 'Favor Progress',
-    shopnpc: 'Shop NPC',
-    traders: 'Traders',
+    traders: 'Shops & Traders',
     warcache: 'Warcache Solver',
     settings: 'Settings'
   };
@@ -102,8 +135,7 @@ function switchView(view) {
   if (view === 'summary' && state.session) renderSummary(state.session);
   if (view === 'history') renderHistory();
   if (view === 'favor') renderFavorView();
-  if (view === 'shopnpc') renderShopNPCList();
-  if (view === 'traders') renderTradersView();
+  if (view === 'traders') { loadTraderCapacity().then(() => renderTradersView()); }
   if (view === 'warcache') renderWarcacheView();
   if (view === 'settings') renderSettingsView();
 }
@@ -168,9 +200,20 @@ function addRow(e) {
 }
 function routeText(d) {
   if (d.verdict === 'favor') {
-    const targets = (d.favor_targets || []).filter(t => !state.disabledNPCs.has(t.npc));
+    let targets = (d.favor_targets || []).filter(t => !state.disabledNPCs.has(t.npc));
     if (!targets.length) return 'no available NPC';
-    return targets.map(t => `${t.npc} (${t.area}) +${t.score}`).join(' · ') || 'gift';
+    // Sort: prioritized NPCs first
+    targets = [...targets].sort((a, b) => {
+      const aPri = state.prioritizedNPCs.has(a.npc) ? 0 : 1;
+      const bPri = state.prioritizedNPCs.has(b.npc) ? 0 : 1;
+      return aPri - bPri || b.score - a.score;
+    });
+    return targets.map(t => {
+      const cap = state.traderCapacity[t.npc];
+      const broke = cap && cap.remaining <= 0 && cap.limit > 0;
+      const pri = state.prioritizedNPCs.has(t.npc) ? '★ ' : '';
+      return `${pri}${t.npc} (${t.area}) +${t.score}${broke ? ' ⚠ 0g' : ''}`;
+    }).join(' · ') || 'gift';
   }
   if (d.player_price) {
     return `player price: ${d.player_price.toFixed(0)}g`;
@@ -249,7 +292,23 @@ function renderFavorList(items) {
     byNPC.get(key).push(e);
   }
 
-  for (const [npc, entries] of byNPC) {
+  // Sort: prioritized NPCs first, then by total favor descending
+  const sorted = [...byNPC.entries()].sort((a, b) => {
+    const aPri = state.prioritizedNPCs.has(a[0].split(' (')[0]) ? 0 : 1;
+    const bPri = state.prioritizedNPCs.has(b[0].split(' (')[0]) ? 0 : 1;
+    if (aPri !== bPri) return aPri - bPri;
+    const aFav = a[1].reduce((s, e) => {
+      const t = (e.decision.favor_targets || []).filter(x => !state.disabledNPCs.has(x.npc));
+      return s + (t.length > 0 ? t[0].score : 0) * e.count;
+    }, 0);
+    const bFav = b[1].reduce((s, e) => {
+      const t = (e.decision.favor_targets || []).filter(x => !state.disabledNPCs.has(x.npc));
+      return s + (t.length > 0 ? t[0].score : 0) * e.count;
+    }, 0);
+    return bFav - aFav;
+  });
+
+  for (const [npc, entries] of sorted) {
     const group = document.createElement('div');
     group.className = 'summary-group';
 
@@ -258,7 +317,17 @@ function renderFavorList(items) {
       const score = targets.length > 0 ? targets[0].score : 0;
       return sum + score * e.count;
     }, 0);
-    group.innerHTML = `<div class="summary-group-header npc">${escapeHtml(npc)} <span style="float:right;color:var(--muted);font-weight:normal">${entries.length} items · ${totalFavor.toFixed(1)} favor</span></div>`;
+
+    // Check trader capacity for this NPC
+    const npcName = npc.split(' (')[0];
+    const cap = state.traderCapacity[npcName];
+    const broke = cap && cap.remaining <= 0 && cap.limit > 0;
+    const isPri = state.prioritizedNPCs.has(npcName);
+
+    group.innerHTML = `<div class="summary-group-header npc">
+      <button class="pri-btn${isPri ? ' active' : ''}" onclick="togglePrioritizeNPC('${escapeHtml(npcName).replace(/'/g, "\\'")}')" title="Prioritize this NPC">★</button>
+      ${escapeHtml(npc)} <span style="float:right;color:var(--muted);font-weight:normal">${entries.length} items · ${totalFavor.toFixed(1)} favor${broke ? ' · <span style="color:#e74c3c">⚠ no gold left (' + cap.reset + ')</span>' : ''}</span>
+    </div>`;
 
     for (const e of entries) {
       const targets = (e.decision.favor_targets || []).filter(t => !state.disabledNPCs.has(t.npc));
@@ -274,6 +343,17 @@ function renderFavorList(items) {
     container.appendChild(group);
   }
 }
+
+window.togglePrioritizeNPC = function(name) {
+  const decoded = name.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+  if (state.prioritizedNPCs.has(decoded)) {
+    state.prioritizedNPCs.delete(decoded);
+  } else {
+    state.prioritizedNPCs.add(decoded);
+  }
+  saveSettings();
+  if (state.session) renderSummary(state.session);
+};
 
 function renderSellList(items) {
   const container = $('#sell-list');
@@ -706,6 +786,7 @@ window.toggleFavorProgress = function(npcName) {
 // Shop NPC functions
 function renderShopNPCList() {
   const container = $('#shopnpc-list');
+  if (!container) return;
   container.innerHTML = '';
   const search = $('#shopnpc-search').value.toLowerCase();
   
@@ -754,9 +835,38 @@ async function loadNPCList() {
   }
 }
 
-$('#shopnpc-search').addEventListener('input', () => {
-  if (state.currentView === 'shopnpc') renderShopNPCList();
+$('#trader-search')?.addEventListener('input', () => {
+  if (state.currentView === 'traders') renderTradersView();
 });
+
+window.toggleHideArea = function(area) {
+  if (state.hiddenAreas.has(area)) {
+    state.hiddenAreas.delete(area);
+  } else {
+    state.hiddenAreas.add(area);
+  }
+  saveSettings();
+  renderTradersView();
+};
+
+window.toggleHideTrader = function(name) {
+  // decode HTML entities back
+  const decoded = name.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+  if (state.hiddenTraders.has(decoded)) {
+    state.hiddenTraders.delete(decoded);
+  } else {
+    state.hiddenTraders.add(decoded);
+  }
+  saveSettings();
+  renderTradersView();
+};
+
+window.toggleShowHiddenOnly = function() {
+  state.showHiddenOnly = !state.showHiddenOnly;
+  const btn = $('#show-hidden-btn');
+  if (btn) btn.classList.toggle('active', state.showHiddenOnly);
+  renderTradersView();
+};
 
 // API helpers
 async function api(path, method = 'GET', body = null) {
@@ -981,22 +1091,63 @@ async function renderTradersView() {
     return;
   }
   
+  const search = ($('#trader-search')?.value || '').toLowerCase();
+  const showHiddenOnly = state.showHiddenOnly;
+  
   // Sort areas alphabetically
   areas.sort((a, b) => a.area.localeCompare(b.area));
   
   container.innerHTML = '';
+  const shopSet = new Set(state.shopNPCs);
+  const hiddenNpcs = [];
+  const esc = s => escapeHtml(s).replace(/'/g, "\\'");
+  
+  // Sync button state
+  const btn = $('#show-hidden-btn');
+  if (btn) btn.classList.toggle('active', showHiddenOnly);
   
   for (const areaData of areas) {
+    // Sort NPCs by name
+    areaData.npcs.sort((a, b) => a.npc_name.localeCompare(b.npc_name));
+    const areaName = esc(areaData.area);
+    const areaHidden = state.hiddenAreas.has(areaData.area);
+    
+    // Collect hidden traders
+    const hiddenInArea = areaData.npcs.filter(n => state.hiddenTraders.has(n.npc_name));
+    for (const npc of hiddenInArea) {
+      hiddenNpcs.push({ ...npc, area: areaData.area });
+    }
+    
+    // In showHiddenOnly mode, skip the main list entirely
+    if (showHiddenOnly) continue;
+    
+    // Filter visible traders
+    const visibleNpcs = areaData.npcs.filter(n => !state.hiddenTraders.has(n.npc_name));
+    
+    // Filter by search
+    const filtered = search
+      ? visibleNpcs.filter(n => n.npc_name.toLowerCase().includes(search) || areaData.area.toLowerCase().includes(search))
+      : visibleNpcs;
+    
+    // Skip hidden areas (unless searching)
+    if (!search && areaHidden) continue;
+    
+    if (filtered.length === 0) continue;
+    
     const areaSection = document.createElement('div');
     areaSection.className = 'trader-area-section';
     
     const header = document.createElement('div');
     header.className = 'trader-area-header';
     header.innerHTML = `
-      <span>${escapeHtml(areaData.area)} <span class="badge">${areaData.count}</span></span>
-      <span class="collapse-icon">▼</span>
+      <span>${escapeHtml(areaData.area)} <span class="badge">${filtered.length}</span></span>
+      <div class="area-header-actions">
+        <button class="hide-btn" title="Hide region" onclick="toggleHideArea('${areaName}')">👁</button>
+        <span class="collapse-icon">▼</span>
+      </div>
     `;
-    header.onclick = () => {
+    header.onclick = (e) => {
+      if (e.target.closest('.hide-btn')) return;
       const content = areaSection.querySelector('.trader-area-content');
       const icon = header.querySelector('.collapse-icon');
       if (content.style.display === 'none') {
@@ -1012,24 +1163,41 @@ async function renderTradersView() {
     const content = document.createElement('div');
     content.className = 'trader-area-content';
     
-    // Sort NPCs by name
-    areaData.npcs.sort((a, b) => a.npc_name.localeCompare(b.npc_name));
-    
-    for (const npc of areaData.npcs) {
+    for (const npc of filtered) {
+      const remaining = Math.max(0, (npc.weekly_limit || 0) - (npc.sold_this_week || 0));
+      const isShop = shopSet.has(npc.npc_name);
+      
       const row = document.createElement('div');
       row.className = 'trader-row' + (npc.unused_warning ? ' unused-warning' : '');
+      row.dataset.npcName = npc.npc_name;
+      row.dataset.area = areaData.area;
+      
+      const name = esc(npc.npc_name);
+      const area = esc(areaData.area);
       
       row.innerHTML = `
-        <div class="trader-name">${escapeHtml(npc.npc_name)}</div>
-        <div class="trader-fields">
-          <label>Limit: <input type="number" class="limit-input" value="${npc.weekly_limit}" min="0" step="1000" onchange="updateTrader('${escapeHtml(npc.npc_name).replace(/'/g, "\\'")}', '${escapeHtml(areaData.area).replace(/'/g, "\\'")}', this.value, null, null, null)"></label>
-          <label>Days: <input type="number" class="days-input" value="${npc.reset_days}" min="0" max="30" onchange="updateTrader('${escapeHtml(npc.npc_name).replace(/'/g, "\\'")}', '${escapeHtml(areaData.area).replace(/'/g, "\\'")}', null, this.value, null, null)"></label>
-          <label>Hours: <input type="number" class="hours-input" value="${npc.reset_hours}" min="0" max="23" onchange="updateTrader('${escapeHtml(npc.npc_name).replace(/'/g, "\\'")}', '${escapeHtml(areaData.area).replace(/'/g, "\\'")}', null, null, this.value, null)"></label>
-          <label>Sold: <input type="number" class="sold-input" value="${npc.sold_this_week}" min="0" step="100" onchange="updateTrader('${escapeHtml(npc.npc_name).replace(/'/g, "\\'")}', '${escapeHtml(areaData.area).replace(/'/g, "\\'")}', null, null, null, this.value)"></label>
+        <div class="trader-row-top">
+          <label class="npc-toggle" title="Mark as shop NPC">
+            <input type="checkbox" ${isShop ? 'checked' : ''} onchange="toggleShopNPC('${name}')">
+            <span class="slider"></span>
+          </label>
+          <div class="trader-name">${escapeHtml(npc.npc_name)}</div>
+          <div class="trader-capacity">
+            <span class="capacity-label">Remaining:</span>
+            <span class="capacity-value${remaining <= 0 ? ' zeroed' : ''}">${remaining.toLocaleString()}g</span>
+          </div>
+          <div class="trader-reset">
+            <span class="reset-timer">${npc.time_until_reset}</span>
+            ${npc.unused_warning ? '<span class="unused-badge">⚠ Unused</span>' : ''}
+          </div>
+          <button class="hide-btn" title="Hide trader" onclick="toggleHideTrader('${name}')">👁</button>
         </div>
-        <div class="trader-status">
-          <span class="reset-timer">${npc.time_until_reset}</span>
-          ${npc.unused_warning ? '<span class="unused-badge">⚠ Unused</span>' : ''}
+        <div class="trader-row-bottom">
+          <label>Limit: <input type="number" class="limit-input" value="${npc.weekly_limit || 0}" min="0" step="1000"></label>
+          <label>Left: <input type="number" class="left-input" value="${remaining}" min="0" step="100"></label>
+          <label>Reset Days: <input type="number" class="days-input" value="${npc.reset_days || 5}" min="0" max="30"></label>
+          <label>Reset Hours: <input type="number" class="hours-input" value="${npc.reset_hours || 22}" min="0" max="23"></label>
+          <button class="save-btn" onclick="saveTraderRow(this)">💾 Save</button>
         </div>
       `;
       content.appendChild(row);
@@ -1038,103 +1206,135 @@ async function renderTradersView() {
     areaSection.appendChild(content);
     container.appendChild(areaSection);
   }
+  
+  // Hidden section
+  if (showHiddenOnly || state.hiddenAreas.size > 0 || hiddenNpcs.length > 0) {
+    const hiddenSection = document.createElement('div');
+    hiddenSection.className = 'trader-area-section hidden-section';
+    
+    // Collect all hidden NPCs: from hiddenTraders + from hidden areas
+    const allHidden = [...hiddenNpcs];
+    const allNames = new Set(allHidden.map(n => n.npc_name));
+    for (const area of state.hiddenAreas) {
+      const areaData = areas.find(a => a.area === area);
+      if (areaData) {
+        for (const npc of areaData.npcs) {
+          if (!allNames.has(npc.npc_name)) {
+            allHidden.push({ ...npc, area });
+            allNames.add(npc.npc_name);
+          }
+        }
+      }
+    }
+    
+    const totalHidden = state.hiddenAreas.size + allHidden.length;
+    const header = document.createElement('div');
+    header.className = 'trader-area-header hidden-header';
+    header.innerHTML = `
+      <span>Hidden <span class="badge">${totalHidden}</span></span>
+      <span class="collapse-icon">${showHiddenOnly ? '▼' : '▶'}</span>
+    `;
+    if (!showHiddenOnly) {
+      header.onclick = () => {
+        const content = hiddenSection.querySelector('.trader-area-content');
+        const icon = header.querySelector('.collapse-icon');
+        if (content.style.display === 'none') {
+          content.style.display = 'block';
+          icon.textContent = '▼';
+        } else {
+          content.style.display = 'none';
+          icon.textContent = '▶';
+        }
+      };
+    }
+    hiddenSection.appendChild(header);
+    
+    const content = document.createElement('div');
+    content.className = 'trader-area-content';
+    content.style.display = showHiddenOnly ? 'block' : 'none';
+    
+    // Hidden areas
+    for (const area of state.hiddenAreas) {
+      const row = document.createElement('div');
+      row.className = 'trader-row hidden-item-row';
+      row.innerHTML = `
+        <div class="trader-row-top">
+          <div class="trader-name">${escapeHtml(area)}</div>
+          <span class="hidden-type-badge">region</span>
+          <button class="unhide-btn" onclick="toggleHideArea('${esc(area)}')">👁‍🗨</button>
+        </div>
+      `;
+      content.appendChild(row);
+    }
+    
+    // Hidden traders
+    for (const npc of allHidden) {
+      const row = document.createElement('div');
+      row.className = 'trader-row hidden-item-row';
+      const name = esc(npc.npc_name);
+      row.innerHTML = `
+        <div class="trader-row-top">
+          <div class="trader-name">${escapeHtml(npc.npc_name)}</div>
+          <div class="trader-area-label">${escapeHtml(npc.area)}</div>
+          <button class="unhide-btn" onclick="toggleHideTrader('${name}')">👁‍🗨</button>
+        </div>
+      `;
+      content.appendChild(row);
+    }
+    
+    hiddenSection.appendChild(content);
+    container.appendChild(hiddenSection);
+  }
+  
+  if (container.children.length === 0) {
+    container.innerHTML = '<div class="summary-empty">No traders found</div>';
+  }
 }
 
-// Update trader settings
-window.updateTrader = async function(npcName, area, limit, days, hours, sold) {
-  const data = {
+// Save all fields for a trader row
+window.saveTraderRow = async function(btn) {
+  const row = btn.closest('.trader-row');
+  const npcName = row.dataset.npcName;
+  const area = row.dataset.area;
+  const limit = parseFloat(row.querySelector('.limit-input').value) || 0;
+  const left = parseFloat(row.querySelector('.left-input').value) || 0;
+  const days = parseInt(row.querySelector('.days-input').value) || 5;
+  const hours = parseInt(row.querySelector('.hours-input').value) || 22;
+  const sold = Math.max(0, limit - left);
+  
+  await api('/api/traders', 'POST', {
     npc_name: npcName,
-    area: area
-  };
-  
-  if (limit !== null) data.weekly_limit = parseFloat(limit) || 0;
-  if (days !== null) data.reset_days = parseInt(days) || 0;
-  if (hours !== null) data.reset_hours = parseInt(hours) || 0;
-  if (sold !== null) data.amount = parseFloat(sold) || 0;
-  
-  await api('/api/traders', 'POST', data);
-  
-  // Refresh after a short delay
-  setTimeout(() => renderTradersView(), 500);
+    area: area,
+    weekly_limit: limit,
+    sold: sold,
+    reset_days: days,
+    reset_hours: hours
+  });
+  await loadTraderCapacity();
+  refreshCapacityDisplay(npcName);
 };
 
-window.editTrader = async function(npcName) {
-  const trader = state.traders.find(t => t.npc_name === npcName);
-  if (!trader) return;
+// Update the remaining display for a specific NPC without rebuilding the view
+function refreshCapacityDisplay(npcName) {
+  const cap = state.traderCapacity[npcName];
+  if (!cap) return;
+  const remaining = cap.remaining;
   
-  // Show edit modal
-  const modal = document.createElement('div');
-  modal.className = 'modal';
-  modal.innerHTML = `
-    <div class="modal-content modal-small">
-      <div class="modal-header">
-        <h3>Edit Trader</h3>
-        <button class="modal-close">×</button>
-      </div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label>${escapeHtml(trader.npc_name)}</label>
-          <label class="sublabel">${escapeHtml(trader.area)}</label>
-        </div>
-        <div class="form-group">
-          <label>Weekly Limit (gold)</label>
-          <input type="number" class="limit-input" value="${trader.weekly_limit}" min="0" step="100">
-        </div>
-        <div class="form-group">
-          <label>Reset Duration</label>
-          <div style="display:flex;gap:8px">
-            <input type="number" class="reset-days" value="${trader.reset_days || 5}" min="0" max="30" style="width:80px">
-            <span style="line-height:32px">days</span>
-            <input type="number" class="reset-hours" value="${trader.reset_hours || 22}" min="0" max="23" style="width:80px">
-            <span style="line-height:32px">hours</span>
-          </div>
-          <div class="sublabel">Time until limit resets after a sale</div>
-        </div>
-        <button class="save-trader-btn">Save Changes</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(modal);
-  
-  const limitInput = modal.querySelector('.limit-input');
-  const daysInput = modal.querySelector('.reset-days');
-  const hoursInput = modal.querySelector('.reset-hours');
-  limitInput.focus();
-  limitInput.select();
-  
-  modal.querySelector('.modal-close').onclick = () => modal.remove();
-  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
-  
-  modal.querySelector('.save-trader-btn').onclick = async () => {
-    const limit = parseFloat(limitInput.value);
-    if (isNaN(limit) || limit <= 0) {
-      alert('Invalid limit');
-      return;
+  // Find the row by NPC name and update capacity value
+  document.querySelectorAll('.trader-name').forEach(el => {
+    if (el.textContent === npcName) {
+      const capVal = el.closest('.trader-row-top')?.querySelector('.capacity-value');
+      if (capVal) {
+        capVal.textContent = remaining.toLocaleString() + 'g';
+        capVal.classList.toggle('zeroed', remaining <= 0);
+      }
+      const capLabel = el.closest('.trader-row-top')?.querySelector('.capacity-label');
+      if (capLabel) {
+        capLabel.textContent = 'Remaining:';
+      }
     }
-    
-    const days = parseInt(daysInput.value) || 0;
-    const hours = parseInt(hoursInput.value) || 0;
-    if (days === 0 && hours === 0) {
-      alert('Reset duration must be at least 1 hour');
-      return;
-    }
-    
-    await api('/api/traders', 'POST', {
-      action: 'update',
-      npc_name: npcName,
-      area: trader.area,
-      weekly_limit: limit,
-      reset_days: days,
-      reset_hours: hours
-    });
-    modal.remove();
-    renderTradersView();
-  };
-  
-  limitInput.onkeydown = (e) => {
-    if (e.key === 'Enter') modal.querySelector('.save-trader-btn').click();
-  };
-};
+  });
+}
 
 window.logSale = async function(npcName) {
   const amount = prompt(`How much did you sell to ${npcName}?`);
@@ -1303,6 +1503,7 @@ let warcachePossibilities = [];
 let warcacheGuess = [null, null, null, null];
 let warcacheSelectedSlot = 0;
 let warcacheHistory = [];
+let warcacheCachedGuess = null;
 
 function warcacheGenerateAll() {
   const all = [];
@@ -1334,6 +1535,7 @@ function warcacheComputeFeedback(guess, possibility) {
 }
 
 function warcacheFilter(guess, feedback) {
+  warcacheCachedGuess = null;
   const [fc, fw] = feedback;
   warcachePossibilities = warcachePossibilities.filter(p => {
     const [c, w] = warcacheComputeFeedback(guess, p);
@@ -1345,18 +1547,18 @@ function warcacheSuggest() {
   if (warcachePossibilities.length === 0) return null;
   if (warcachePossibilities.length === 1) return warcachePossibilities[0];
   
+  // Skip minimax when space is large — first guess is info-theoretically
+  // equivalent regardless, and minimax over 20K possibilities blocks the UI.
+  if (warcachePossibilities.length > 2000) {
+    if (!warcacheCachedGuess) warcacheCachedGuess = warcachePossibilities[Math.floor(Math.random() * warcachePossibilities.length)];
+    return warcacheCachedGuess;
+  }
+  
   // Minimax: find guess that minimizes max remaining possibilities
-  // For efficiency, only evaluate guesses from remaining possibilities
   let bestGuess = null;
   let minMaxRemaining = Infinity;
   
-  // Sample if too many possibilities (use first 500 for speed)
-  const candidates = warcachePossibilities.length > 500 
-    ? warcachePossibilities.slice(0, 500) 
-    : warcachePossibilities;
-  
-  for (const guess of candidates) {
-    // Count feedback distribution
+  for (const guess of warcachePossibilities) {
     const feedbackCounts = {};
     for (const possibility of warcachePossibilities) {
       const [c, w] = warcacheComputeFeedback(guess, possibility);
@@ -1364,7 +1566,6 @@ function warcacheSuggest() {
       feedbackCounts[key] = (feedbackCounts[key] || 0) + 1;
     }
     
-    // Find max remaining for this guess
     const maxRemaining = Math.max(...Object.values(feedbackCounts));
     
     if (maxRemaining < minMaxRemaining) {
@@ -1373,7 +1574,7 @@ function warcacheSuggest() {
     }
   }
   
-  return bestGuess || warcachePossibilities[0];
+  return bestGuess;
 }
 
 function warcacheRenderGuessSlots() {
@@ -1526,6 +1727,7 @@ $('#warcache-reset')?.addEventListener('click', () => {
   warcacheGuess = [null, null, null, null];
   warcacheSelectedSlot = 0;
   warcacheHistory = [];
+  warcacheCachedGuess = null;
   $('#warcache-feedback').value = '';
   warcacheRenderGuessSlots();
   warcacheUpdateSuggestion();

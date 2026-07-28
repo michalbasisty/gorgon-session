@@ -108,7 +108,13 @@ func (m *Manager) Ensure(npcName, area string, resetDays, resetHours int) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.traders[npcName]; exists {
+	if t, exists := m.traders[npcName]; exists {
+		// Update settings on existing trader
+		if area != "" {
+			t.Area = area
+		}
+		t.ResetDays = resetDays
+		t.ResetHours = resetHours
 		return nil
 	}
 
@@ -185,22 +191,13 @@ func (m *Manager) LogSale(npcName string, amount float64) error {
 	return nil
 }
 
-// GetAll returns all traders, auto-resetting any that are past their reset time.
+// GetAll returns all traders. Does NOT auto-reset — use TimeUntilReset to check.
 func (m *Manager) GetAll() []*Trader {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	result := make([]*Trader, 0, len(m.traders))
-	now := time.Now()
-
 	for _, t := range m.traders {
-		// Auto-reset if past reset duration since last sale
-		if !t.LastSale.IsZero() {
-			resetDuration := time.Duration(t.ResetDays)*24*time.Hour + time.Duration(t.ResetHours)*time.Hour
-			if now.Sub(t.LastSale) > resetDuration {
-				t.SoldThisWeek = 0
-			}
-		}
 		result = append(result, t)
 	}
 	return result
@@ -245,7 +242,20 @@ func (m *Manager) TimeUntilReset(npcName string) time.Duration {
 	return remaining
 }
 
-// FormatDuration formats a duration into a human-readable string.
+// SetSold directly sets the sold amount for a trader.
+func (m *Manager) SetSold(npcName string, amount float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	t, exists := m.traders[npcName]
+	if !exists {
+		return fmt.Errorf("trader %s not found", npcName)
+	}
+
+	t.SoldThisWeek = amount
+	t.LastSale = time.Now()
+	return nil
+}
 func FormatDuration(d time.Duration) string {
 	if d <= 0 {
 		return "now"

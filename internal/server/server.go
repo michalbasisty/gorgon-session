@@ -472,35 +472,49 @@ func (s *Server) handleTraders(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		// Update trader settings or log sale
 		var req struct {
-			NPCName     string  `json:"npc_name"`
-			Area        string  `json:"area"`
-			WeeklyLimit float64 `json:"weekly_limit"`
-			Amount      float64 `json:"amount"`
-			ResetDays   int     `json:"reset_days"`
-			ResetHours  int     `json:"reset_hours"`
+			NPCName     string   `json:"npc_name"`
+			Area        string   `json:"area"`
+			WeeklyLimit *float64 `json:"weekly_limit,omitempty"`
+			Amount      *float64 `json:"amount,omitempty"`
+			Sold        *float64 `json:"sold,omitempty"`
+			ResetDays   *int     `json:"reset_days,omitempty"`
+			ResetHours  *int     `json:"reset_hours,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Ensure trader exists
-		if err := s.Trader.Ensure(req.NPCName, req.Area, req.ResetDays, req.ResetHours); err != nil {
+		// Ensure trader exists (also updates reset settings)
+		rd, rh := 5, 22
+		if req.ResetDays != nil {
+			rd = *req.ResetDays
+		}
+		if req.ResetHours != nil {
+			rh = *req.ResetHours
+		}
+		if err := s.Trader.Ensure(req.NPCName, req.Area, rd, rh); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		// Update limit if provided
-		if req.WeeklyLimit > 0 {
-			if err := s.Trader.UpdateLimit(req.NPCName, req.WeeklyLimit); err != nil {
+		if req.WeeklyLimit != nil {
+			if err := s.Trader.UpdateLimit(req.NPCName, *req.WeeklyLimit); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 		}
 
-		// Log sale if amount provided
-		if req.Amount > 0 {
-			if err := s.Trader.LogSale(req.NPCName, req.Amount); err != nil {
+		// Set sold amount if provided
+		if req.Sold != nil {
+			if err := s.Trader.SetSold(req.NPCName, *req.Sold); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else if req.Amount != nil && *req.Amount > 0 {
+			// Log sale (additive)
+			if err := s.Trader.LogSale(req.NPCName, *req.Amount); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -517,7 +531,7 @@ func (s *Server) handleTraders(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// getAllBarterTraders returns all NPCs with Barter service, grouped by area
+// getAllBarterTraders returns all NPCs with Store or Consignment service, grouped by area
 func (s *Server) getAllBarterTraders() []map[string]interface{} {
 	// Get all NPCs from favor engine
 	npcs := s.Favor.GetNPCs()
@@ -526,16 +540,16 @@ func (s *Server) getAllBarterTraders() []map[string]interface{} {
 	areaMap := make(map[string][]map[string]interface{})
 	
 	for _, npc := range npcs {
-		// Check if NPC has Barter service
-		hasBarter := false
+		// Check if NPC has Store or Consignment service (buyers)
+		hasService := false
 		for _, svc := range npc.Services {
-			if svc.Type == "Barter" {
-				hasBarter = true
+			if svc.Type == "Store" || svc.Type == "Consignment" {
+				hasService = true
 				break
 			}
 		}
 		
-		if !hasBarter {
+		if !hasService {
 			continue
 		}
 		

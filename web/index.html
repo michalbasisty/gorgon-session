@@ -15,8 +15,7 @@
       <li class="nav-item" data-view="summary">Summary</li>
       <li class="nav-item" data-view="history">History</li>
       <li class="nav-item" data-view="favor">Favor</li>
-      <li class="nav-item" data-view="shopnpc">Shop NPC</li>
-      <li class="nav-item" data-view="traders">Traders</li>
+      <li class="nav-item" data-view="traders">Shops & Traders</li>
       <li class="nav-item" data-view="warcache">Warcache</li>
       <li class="nav-item" data-view="settings">Settings</li>
     </ul>
@@ -155,19 +154,13 @@
         <div id="favor-list-view" class="npc-list"></div>
       </section>
 
-      <!-- Shop NPC view -->
-      <section id="view-shopnpc" class="hidden">
-        <h2>Shop NPC <span id="shopnpc-count" class="badge">0</span></h2>
-        <div class="settings-search">
-          <input id="shopnpc-search" type="text" placeholder="search NPC..." autocomplete="off">
-        </div>
-        <div id="shopnpc-list" class="npc-list"></div>
-      </section>
-
-      <!-- Traders view -->
+      <!-- Shops & Traders view -->
       <section id="view-traders" class="hidden">
-        <h2>Traders</h2>
-        <p class="muted">All NPCs with barter services. Click an area to expand. Edit limits and track sales inline.</p>
+        <h2>Shops & Traders</h2>
+        <div class="settings-search trader-search-bar">
+          <input id="trader-search" type="text" placeholder="search NPC or area..." autocomplete="off">
+          <button id="show-hidden-btn" class="filter-btn" onclick="toggleShowHiddenOnly()">👁‍🗨 hidden</button>
+        </div>
         <div id="traders-list"></div>
       </section>
 
