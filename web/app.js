@@ -653,10 +653,10 @@ async function renderHistory() {
           <div class="history-stat-label">Sell</div>
           <div class="history-stat-value">${session.sell_items}</div>
         </div>
-      </div>
-    `;
-    container.appendChild(card);
-  }
+        </div>
+      `;
+      card.appendChild(content);
+    }
 }
 
 async function loadSessionDetail(sessionId) {
@@ -1200,6 +1200,15 @@ async function renderTradersView() {
           <button class="save-btn" onclick="saveTraderRow(this)">💾 Save</button>
         </div>
       `;
+      // Show save button when user edits any field
+      row.querySelectorAll('.trader-row-bottom input').forEach(inp => {
+        inp.addEventListener('input', () => {
+          const btn = row.querySelector('.save-btn');
+          btn.style.display = '';
+          btn.textContent = '💾 Save';
+          btn.disabled = false;
+        });
+      });
       content.appendChild(row);
     }
     
@@ -1302,7 +1311,9 @@ window.saveTraderRow = async function(btn) {
   const hours = parseInt(row.querySelector('.hours-input').value) || 22;
   const sold = Math.max(0, limit - left);
   
-  await api('/api/traders', 'POST', {
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  const res = await api('/api/traders', 'POST', {
     npc_name: npcName,
     area: area,
     weekly_limit: limit,
@@ -1310,8 +1321,16 @@ window.saveTraderRow = async function(btn) {
     reset_days: days,
     reset_hours: hours
   });
+  if (!res) {
+    btn.textContent = '💾 Save';
+    btn.disabled = false;
+    return;
+  }
   await loadTraderCapacity();
   refreshCapacityDisplay(npcName);
+  btn.textContent = '✓ Saved';
+  btn.disabled = false;
+  setTimeout(() => { btn.textContent = '💾 Save'; }, 1500);
 };
 
 // Update the remaining display for a specific NPC without rebuilding the view
