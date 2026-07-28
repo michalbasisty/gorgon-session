@@ -254,14 +254,20 @@
           <span id="settings-status" class="settings-status"></span>
         </form>
 
-        <h3>Player Prices</h3>
-        <p class="form-help">Items that sell for more to other players than the vendor value. These will be routed to consignment.</p>
-        <div class="player-prices-add">
-          <input id="pp-item-name" type="text" placeholder="Item name" autocomplete="off">
-          <input id="pp-item-price" type="number" min="0" placeholder="Price (g)" autocomplete="off">
-          <button id="pp-add">Add</button>
+        <div class="player-prices-section">
+          <h3>Player Prices</h3>
+          <p class="form-help">Items worth more to other players than the vendor value will route to consignment.</p>
+          <div class="player-prices-add">
+            <input id="pp-item-name" type="text" placeholder="Item name" autocomplete="off">
+            <input id="pp-item-price" type="number" min="0" placeholder="Price (g)" autocomplete="off">
+            <button id="pp-add">Add</button>
+          </div>
+          <div class="player-prices-header">
+            <input id="pp-search" type="text" placeholder="Filter prices..." autocomplete="off">
+            <span id="pp-count" class="pp-count">0 items</span>
+          </div>
+          <div id="pp-list"></div>
         </div>
-        <div id="pp-list"></div>
       </section>
     </main>
   </div>

@@ -53,58 +53,89 @@ $('#settings-form').addEventListener('submit', async (e) => {
 });
 
 // Player prices management
+let ppFilter = '';
 function renderPlayerPrices() {
   const container = $('#pp-list');
   if (!container) return;
-  container.innerHTML = '';
   
   const entries = Object.entries(state.playerPrices);
-  if (entries.length === 0) {
-    container.innerHTML = '<div class="summary-empty">No player prices set</div>';
+  const totalCount = entries.length;
+  const filtered = ppFilter ? entries.filter(([name]) => name.toLowerCase().includes(ppFilter.toLowerCase())) : entries;
+  
+  container.innerHTML = '';
+  const count = $('#pp-count');
+  if (count) count.textContent = `${totalCount} item${totalCount !== 1 ? 's' : ''}`;
+  
+  if (filtered.length === 0) {
+    container.innerHTML = `<div class="summary-empty">${totalCount === 0 ? 'No player prices set' : 'No items match your filter'}</div>`;
     return;
   }
   
-  for (const [name, price] of entries) {
+  for (const [name, price] of filtered) {
     const item = document.createElement('div');
     item.className = 'pp-item';
+    item.dataset.name = name;
     item.innerHTML = `
       <span class="pp-name">${escapeHtml(name)}</span>
       <span class="pp-price">${price.toFixed(0)}g</span>
-      <button class="pp-delete" onclick="removePlayerPrice('${escapeHtml(name).replace(/'/g, "\\'")}')">×</button>
+      <button class="pp-delete" aria-label="Delete ${escapeHtml(name)}">×</button>
     `;
     container.appendChild(item);
   }
 }
 
-window.removePlayerPrice = async function(name) {
+// Event delegation for delete buttons
+$('#pp-list')?.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.pp-delete');
+  if (!btn) return;
+  const item = btn.closest('.pp-item');
+  if (!item) return;
+  const name = item.dataset.name;
+  if (!name) return;
+  
   delete state.playerPrices[name];
   saveSettings();
   renderPlayerPrices();
+  
+  // Persist to server
+  pushPlayerPricesToServer();
+});
+
+async function pushPlayerPricesToServer() {
   await api('/api/config', 'POST', {
     chat_log_dir: $('#settings-chat-log-dir')?.value.trim() || '',
     loot_regex: $('#settings-loot-regex')?.value.trim() || '',
     sell_value_threshold: parseFloat($('#settings-sell-value-threshold')?.value) || 0,
     player_prices: state.playerPrices
   });
-};
+}
 
 $('#pp-add')?.addEventListener('click', async () => {
-  const name = $('#pp-item-name').value.trim();
-  const price = parseFloat($('#pp-item-price').value);
-  if (!name || isNaN(price) || price <= 0) return;
+  const nameEl = $('#pp-item-name');
+  const priceEl = $('#pp-item-price');
+  const name = nameEl.value.trim();
+  const price = parseFloat(priceEl.value);
+  if (!name || isNaN(price) || price <= 0) { toast('Enter a valid item name and price', 'error'); return; }
   
   state.playerPrices[name] = price;
   saveSettings();
   renderPlayerPrices();
-  $('#pp-item-name').value = '';
-  $('#pp-item-price').value = '';
+  nameEl.value = '';
+  priceEl.value = '';
+  nameEl.focus();
   
-  await api('/api/config', 'POST', {
-    chat_log_dir: $('#settings-chat-log-dir')?.value.trim() || '',
-    loot_regex: $('#settings-loot-regex')?.value.trim() || '',
-    sell_value_threshold: parseFloat($('#settings-sell-value-threshold')?.value) || 0,
-    player_prices: state.playerPrices
-  });
+  await pushPlayerPricesToServer();
+});
+
+// Allow Enter key on price input to trigger Add
+$('#pp-item-price')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('#pp-add')?.click();
+});
+
+// Search filter
+$('#pp-search')?.addEventListener('input', (e) => {
+  ppFilter = e.target.value;
+  renderPlayerPrices();
 });
 
 // ==================== Warcache Solver ====================
