@@ -510,13 +510,6 @@ widgetRenderers['trader-alerts'] = function(w, sessions) {
 };
 
 widgetRenderers['top-items'] = function(w, sessions) {
-  // Count top items across all sessions
-  const counts = {};
-  for (const s of sessions) {
-    if (!s.total_value && s.favor_items === undefined) continue;
-    // We don't have per-item breakdown in summary, so show a simple stat
-  }
-  // Show recent high-value sessions instead as a simple stat
   const top = [...sessions].sort((a, b) => b.total_value - a.total_value).slice(0, 5);
   if (top.length === 0) return '<div class="dash-info-box"><span class="muted">No data yet</span></div>';
   let html = '<div class="dash-recent-list">';
@@ -665,7 +658,7 @@ function renderDashWidgetList() {
       renderDashboard();
     });
   });
-});
+}
 
 // Check canvas roundRect support
 if (!CanvasRenderingContext2D.prototype.roundRect) {
