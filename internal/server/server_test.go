@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,9 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourname/gorgon-session/internal/config"
-	"github.com/yourname/gorgon-session/internal/favor"
-	"github.com/yourname/gorgon-session/internal/session"
+	"github.com/michalbasisty/gorgon-session/internal/config"
+	"github.com/michalbasisty/gorgon-session/internal/favor"
+	"github.com/michalbasisty/gorgon-session/internal/session"
+	"github.com/michalbasisty/gorgon-session/internal/trader"
 )
 
 func TestHandleSessionExport_NotFound(t *testing.T) {
@@ -231,6 +233,194 @@ func TestHandleSessionExport_SpecialCharacters(t *testing.T) {
 	}
 	if records[2][0] != "Item, with comma" {
 		t.Errorf("expected comma preserved, got %s", records[2][0])
+	}
+}
+
+func TestHandleSessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := config.Config{ReportDir: tmpDir}
+	srv := &Server{Cfg: cfg}
+
+	// Create two session snapshot files
+	now := time.Now()
+	snapshots := []session.Snapshot{
+		{
+			State:     session.Stopped,
+			Dungeon:   "Ancient Forest",
+			StartedAt: now.Add(-2 * time.Hour),
+			EndedAt:   now.Add(-1 * time.Hour),
+			Loot: []session.LootEntry{
+				{Name: "Sword", Valor: 100, Count: 1, Decision: favor.Decision{Verdict: favor.VerdictFavor}},
+				{Name: "Gold", Valor: 50, Count: 5, Decision: favor.Decision{Verdict: favor.VerdictSellVendor}},
+			},
+		},
+		{
+			State:     session.Stopped,
+			Dungeon:   "Crystal Cave",
+			StartedAt: now.Add(-5 * time.Hour),
+			EndedAt:   now.Add(-4 * time.Hour),
+			Loot: []session.LootEntry{
+				{Name: "Gem", Valor: 200, Count: 1, Decision: favor.Decision{Verdict: favor.VerdictKeep}},
+			},
+		},
+	}
+
+	for i, snap := range snapshots {
+		data, _ := json.Marshal(snap)
+		os.WriteFile(filepath.Join(tmpDir, fmt.Sprintf("session-%s-%s.json", snap.Dungeon, fmt.Sprintf("%03d", i))), data, 0644)
+	}
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var sessions []SessionSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Errorf("expected 2 sessions, got %d", len(sessions))
+	}
+
+	// Check fields on first session (recently started)
+	if sessions[0].Dungeon != snapshots[0].Dungeon {
+		t.Errorf("expected dungeon %q, got %q", snapshots[0].Dungeon, sessions[0].Dungeon)
+	}
+	if sessions[0].TotalItems != 6 {
+		t.Errorf("expected 6 total items, got %d", sessions[0].TotalItems)
+	}
+	if sessions[0].UniqueItems != 2 {
+		t.Errorf("expected 2 unique items, got %d", sessions[0].UniqueItems)
+	}
+	if sessions[0].TotalValue != 350 {
+		t.Errorf("expected total value 350, got %f", sessions[0].TotalValue)
+	}
+	if sessions[0].FavorItems != 1 {
+		t.Errorf("expected 1 favor item, got %d", sessions[0].FavorItems)
+	}
+	if sessions[0].SellItems != 1 {
+		t.Errorf("expected 1 sell item, got %d", sessions[0].SellItems)
+	}
+}
+
+func TestHandleSessions_EmptyDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := config.Config{ReportDir: tmpDir}
+	srv := &Server{Cfg: cfg}
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var sessions []SessionSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Errorf("expected 0 sessions, got %d", len(sessions))
+	}
+
+	// Verify it's an empty array, not null
+	body := strings.TrimSpace(w.Body.String())
+	if body != "[]" && body != "null" {
+		t.Errorf("expected empty array, got %s", body)
+	}
+}
+
+func TestHandleSessions_NoReportDir(t *testing.T) {
+	cfg := config.Config{ReportDir: ""}
+	srv := &Server{Cfg: cfg}
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	// Should return empty array when no report dir configured
+	var sessions []SessionSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Errorf("expected 0 sessions, got %d", len(sessions))
+	}
+}
+
+func TestHandleTraderPost_UpdateLimit(t *testing.T) {
+	td := t.TempDir()
+	traderMgr := trader.New(filepath.Join(td, "traders.json"))
+
+	srv := &Server{
+		Cfg:   config.Config{},
+		Trader: traderMgr,
+	}
+
+	// Create a trader via POST
+	body := `{"npc_name":"Test Merchant","area":"Test Area","weekly_limit":5000,"reset_days":7,"reset_hours":0}`
+	req := httptest.NewRequest("POST", "/api/traders", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.handleTraders(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify the trader was saved
+	traders := traderMgr.GetAll()
+	if len(traders) != 1 {
+		t.Errorf("expected 1 trader, got %d", len(traders))
+	}
+	if traders[0].NPCName != "Test Merchant" {
+		t.Errorf("expected 'Test Merchant', got %s", traders[0].NPCName)
+	}
+	if traders[0].WeeklyLimit != 5000 {
+		t.Errorf("expected limit 5000, got %f", traders[0].WeeklyLimit)
+	}
+}
+
+func TestHandleTraderPost_LogSale(t *testing.T) {
+	td := t.TempDir()
+	traderMgr := trader.New(filepath.Join(td, "traders.json"))
+
+	// Create a trader first
+	traderMgr.Ensure("Merchant", "Area", 5, 22)
+	traderMgr.UpdateLimit("Merchant", 10000)
+
+	srv := &Server{
+		Cfg:   config.Config{},
+		Trader: traderMgr,
+	}
+
+	// Log a sale
+	body := `{"npc_name":"Merchant","amount":2500}`
+	req := httptest.NewRequest("POST", "/api/traders", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.handleTraders(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify sale was logged
+	traders := traderMgr.GetAll()
+	if len(traders) != 1 {
+		t.Errorf("expected 1 trader, got %d", len(traders))
+	}
+	if traders[0].SoldThisWeek != 2500 {
+		t.Errorf("expected sold 2500, got %f", traders[0].SoldThisWeek)
 	}
 }
 

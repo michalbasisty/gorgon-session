@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yourname/gorgon-session/internal/favor"
+	"github.com/michalbasisty/gorgon-session/internal/favor"
 )
 
 var (
@@ -75,7 +75,7 @@ func New() *Manager {
 		loot:    []LootEntry{},
 		byItem:  map[string]int{},
 		counts:  map[string]int{},
-		events:  make(chan Event, 256),
+		events:  make(chan Event, 4096),
 	}
 }
 
@@ -181,6 +181,33 @@ func (m *Manager) AddLoot(e LootEntry) {
 		Time:    sentCopy.LastSeen,
 		Payload: sentCopy,
 	})
+}
+
+// RemoveLoot removes entries matching name from the active session.
+func (m *Manager) RemoveLoot(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state != Running {
+		return false
+	}
+	idx, ok := m.byItem[name]
+	if !ok {
+		return false
+	}
+	m.loot = append(m.loot[:idx], m.loot[idx+1:]...)
+	delete(m.byItem, name)
+	delete(m.counts, name)
+	for i := range m.loot {
+		m.byItem[m.loot[i].Name] = i
+	}
+	return true
+}
+
+// SetNotes updates the active session's notes.
+func (m *Manager) SetNotes(notes string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.notes = notes
 }
 
 // Events returns the broadcast channel SSE handlers consume.

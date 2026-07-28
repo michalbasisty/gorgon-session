@@ -3,7 +3,7 @@ package favor
 import (
 	"testing"
 
-	"github.com/yourname/gorgon-session/internal/cdn"
+	"github.com/michalbasisty/gorgon-session/internal/cdn"
 )
 
 func TestResolveItem_NoKeywords(t *testing.T) {

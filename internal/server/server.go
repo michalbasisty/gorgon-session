@@ -12,15 +12,16 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/yourname/gorgon-session/internal/cdn"
-	"github.com/yourname/gorgon-session/internal/config"
-	"github.com/yourname/gorgon-session/internal/favor"
-	"github.com/yourname/gorgon-session/internal/logtail"
-	"github.com/yourname/gorgon-session/internal/loot"
-	"github.com/yourname/gorgon-session/internal/session"
-	"github.com/yourname/gorgon-session/internal/trader"
+	"github.com/michalbasisty/gorgon-session/internal/cdn"
+	"github.com/michalbasisty/gorgon-session/internal/config"
+	"github.com/michalbasisty/gorgon-session/internal/favor"
+	"github.com/michalbasisty/gorgon-session/internal/logtail"
+	"github.com/michalbasisty/gorgon-session/internal/loot"
+	"github.com/michalbasisty/gorgon-session/internal/session"
+	"github.com/michalbasisty/gorgon-session/internal/trader"
 )
 
 // Server combines all the moving parts reachable over HTTP.
@@ -33,6 +34,10 @@ type Server struct {
 	Parser   *loot.Parser
 	Trader   *trader.Manager
 	ItemByID map[int]cdn.Item // item code -> item data
+
+	sessionsMu     sync.RWMutex
+	sessionsCache  []SessionSummary
+	sessionsCached bool // false = invalidated
 }
 
 // New wires a Server.
@@ -103,7 +108,20 @@ func contentType(name string) string {
 
 // handleSession: GET current snapshot.
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.Sess.Snapshot())
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.Sess.Snapshot())
+	case http.MethodPatch:
+		var body struct{ Notes string `json:"notes"` }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.Sess.SetNotes(body.Notes)
+		writeJSON(w, s.Sess.Snapshot())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // handleStart: POST {dungeon, notes} starts a fresh session.
@@ -128,12 +146,66 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Invalidate session list cache
+	s.sessionsMu.Lock()
+	s.sessionsCached = false
+	s.sessionsMu.Unlock()
 	writeJSON(w, s.Sess.Snapshot())
 }
 
-// handleLoot: GET current looted-items table.
+// handleLoot: GET current loot, POST manual entry, DELETE remove entry.
 func (s *Server) handleLoot(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.Sess.Snapshot().Loot)
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.Sess.Snapshot().Loot)
+	case http.MethodPost:
+		var body struct {
+			Name  string  `json:"name"`
+			Value float64 `json:"value"`
+			Count int     `json:"count"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.Name == "" {
+			http.Error(w, "name required", http.StatusBadRequest)
+			return
+		}
+		if body.Count <= 0 {
+			body.Count = 1
+		}
+		// resolve through favor engine if possible
+		hit := s.ItemByName(body.Name)
+		dec := s.Favor.ResolveItem(hit.Item)
+		entry := session.LootEntry{
+			Name:    hit.ItemName,
+			ItemID:  hit.Item.ItemID,
+			Valor:   body.Value,
+			Count:   body.Count,
+			FirstSeen: time.Now(),
+			LastSeen:  time.Now(),
+			Decision:  dec,
+		}
+		if body.Value > 0 {
+			entry.Valor = body.Value
+		}
+		s.Sess.AddLoot(entry)
+		writeJSON(w, entry)
+	case http.MethodDelete:
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			http.Error(w, "name query param required", http.StatusBadRequest)
+			return
+		}
+		if s.Sess.RemoveLoot(name) {
+			writeJSON(w, map[string]any{"ok": true})
+		} else {
+			http.Error(w, "item not found", http.StatusNotFound)
+		}
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // handleFeed: GET Server-Sent Events stream of session events.
@@ -279,18 +351,37 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.sessionsMu.RLock()
+	cached := s.sessionsCached
+	summary := s.sessionsCache
+	s.sessionsMu.RUnlock()
+
+	if cached {
+		writeJSON(w, summary)
+		return
+	}
+
+	summary = s.buildSessions()
+
+	s.sessionsMu.Lock()
+	s.sessionsCache = summary
+	s.sessionsCached = true
+	s.sessionsMu.Unlock()
+
+	writeJSON(w, summary)
+}
+
+func (s *Server) buildSessions() []SessionSummary {
 	sessions := []SessionSummary{}
 	reportDir := s.Cfg.ReportDir
 
 	if reportDir == "" {
-		writeJSON(w, sessions)
-		return
+		return sessions
 	}
 
 	files, err := os.ReadDir(reportDir)
 	if err != nil {
-		writeJSON(w, sessions)
-		return
+		return sessions
 	}
 
 	for _, file := range files {
@@ -352,16 +443,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return sessions[i].StartedAt.After(sessions[j].StartedAt)
 	})
 
-	writeJSON(w, sessions)
+	return sessions
 }
 
 // handleSessionByID: GET details of a specific past session, or GET /export for CSV.
 func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	path := strings.TrimPrefix(r.URL.Path, "/api/session/")
 	if strings.HasSuffix(path, "/export") {
 		s.handleSessionExport(w, r)
@@ -381,19 +467,64 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filePath := filepath.Join(reportDir, sessionID+".json")
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
 
-	var snapshot session.Snapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		http.Error(w, "failed to parse session", http.StatusInternalServerError)
-		return
-	}
+	switch r.Method {
+	case http.MethodGet:
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		var snapshot session.Snapshot
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			http.Error(w, "failed to parse session", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, snapshot)
 
-	writeJSON(w, snapshot)
+	case http.MethodPatch:
+		// Update session notes in the saved report file
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		var snapshot session.Snapshot
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			http.Error(w, "failed to parse session", http.StatusInternalServerError)
+			return
+		}
+		var body struct{ Notes string `json:"notes"` }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		snapshot.Notes = body.Notes
+		out, _ := json.MarshalIndent(snapshot, "", "  ")
+		if err := os.WriteFile(filePath, out, 0644); err != nil {
+			http.Error(w, "failed to save", http.StatusInternalServerError)
+			return
+		}
+		// Invalidate session list cache
+		s.sessionsMu.Lock()
+		s.sessionsCached = false
+		s.sessionsMu.Unlock()
+		writeJSON(w, snapshot)
+
+	case http.MethodDelete:
+		if err := os.Remove(filePath); err != nil {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		// Invalidate session list cache
+		s.sessionsMu.Lock()
+		s.sessionsCached = false
+		s.sessionsMu.Unlock()
+		writeJSON(w, map[string]any{"ok": true})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // handleSessionExport: GET CSV export of a specific past session.
@@ -532,12 +663,23 @@ func (s *Server) handleTraders(w http.ResponseWriter, r *http.Request) {
 }
 
 // getAllBarterTraders returns all NPCs with Store or Consignment service, grouped by area
-func (s *Server) getAllBarterTraders() []map[string]interface{} {
+func (s *Server) getAllBarterTraders() []AreaTraders {
 	// Get all NPCs from favor engine
 	npcs := s.Favor.GetNPCs()
 	
 	// Group by area
-	areaMap := make(map[string][]map[string]interface{})
+	type traderInfo struct {
+		NPCName        string  `json:"npc_name"`
+		Area           string  `json:"-"`
+		HasBarter      bool    `json:"has_barter"`
+		WeeklyLimit    float64 `json:"weekly_limit"`
+		SoldThisWeek   float64 `json:"sold_this_week"`
+		ResetDays      int     `json:"reset_days"`
+		ResetHours     int     `json:"reset_hours"`
+		TimeUntilReset string  `json:"time_until_reset"`
+		UnusedWarning  bool    `json:"unused_warning"`
+	}
+	areaMap := make(map[string][]traderInfo)
 	
 	for _, npc := range npcs {
 		// Check if NPC has Store or Consignment service (buyers)
@@ -556,44 +698,65 @@ func (s *Server) getAllBarterTraders() []map[string]interface{} {
 		// Get tracked data if exists
 		tracked := s.Trader.Get(npc.Name)
 		
-		npcData := map[string]interface{}{
-			"npc_name":   npc.Name,
-			"area":       npc.AreaFriendly,
-			"has_barter": true,
+		info := traderInfo{
+			NPCName:   npc.Name,
+			Area:      npc.AreaFriendly,
+			HasBarter: true,
 		}
 		
 		if tracked != nil {
 			duration := s.Trader.TimeUntilReset(npc.Name)
 			unusedCapacity := tracked.WeeklyLimit - tracked.SoldThisWeek
-			unusedWarning := unusedCapacity > (tracked.WeeklyLimit * 0.5)
-			
-			npcData["weekly_limit"] = tracked.WeeklyLimit
-			npcData["sold_this_week"] = tracked.SoldThisWeek
-			npcData["reset_days"] = tracked.ResetDays
-			npcData["reset_hours"] = tracked.ResetHours
-			npcData["time_until_reset"] = trader.FormatDuration(duration)
-			npcData["unused_warning"] = unusedWarning
+			info.WeeklyLimit = tracked.WeeklyLimit
+			info.SoldThisWeek = tracked.SoldThisWeek
+			info.ResetDays = tracked.ResetDays
+			info.ResetHours = tracked.ResetHours
+			info.TimeUntilReset = trader.FormatDuration(duration)
+			info.UnusedWarning = unusedCapacity > (tracked.WeeklyLimit * 0.5)
 		} else {
-			npcData["weekly_limit"] = 0
-			npcData["sold_this_week"] = 0
-			npcData["reset_days"] = 5
-			npcData["reset_hours"] = 22
-			npcData["time_until_reset"] = "5d 22h"
-			npcData["unused_warning"] = false
+			info.TimeUntilReset = "5d 22h"
 		}
 		
-		areaMap[npc.AreaFriendly] = append(areaMap[npc.AreaFriendly], npcData)
+		areaMap[npc.AreaFriendly] = append(areaMap[npc.AreaFriendly], info)
 	}
 	
 	// Convert to sorted slice
-	var result []map[string]interface{}
+	var result []AreaTraders
 	for area, npcs := range areaMap {
-		result = append(result, map[string]interface{}{
-			"area":  area,
-			"npcs":  npcs,
-			"count": len(npcs),
+		result = append(result, AreaTraders{
+			Area:  area,
+			NPCs:  npcs,
+			Count: len(npcs),
 		})
 	}
 	
 	return result
+}
+
+// AreaTraders groups NPCs by their in-game area for the frontend.
+type AreaTraders struct {
+	Area  string      `json:"area"`
+	NPCs  interface{} `json:"npcs"`
+	Count int         `json:"count"`
+}
+
+// ItemByName does a case-insensitive name lookup across all CDN items.
+// Returns a synthetic item with just Name populated if not found.
+func (s *Server) ItemByName(name string) struct {
+	ItemName string
+	Item     cdn.Item
+} {
+	key := strings.ToLower(strings.TrimSpace(name))
+	for _, item := range s.ItemByID {
+		if strings.ToLower(item.Name) == key {
+			return struct {
+				ItemName string
+				Item     cdn.Item
+			}{item.Name, item}
+		}
+	}
+	return struct {
+		ItemName string
+		Item     cdn.Item
+	}{name, cdn.Item{Name: name}}
 }

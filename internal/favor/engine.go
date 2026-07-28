@@ -21,7 +21,7 @@ package favor
 import (
 	"fmt"
 
-	"github.com/yourname/gorgon-session/internal/cdn"
+	"github.com/michalbasisty/gorgon-session/internal/cdn"
 )
 
 // Engine holds indexed NPC data and answers routing decisions.

@@ -1,3 +1,4 @@
+/* ===== Variables & Reset ===== */
 :root {
   --bg: #0f1117;
   --fg: #e6e6e6;
@@ -25,6 +26,7 @@ body {
   min-height: 100vh;
 }
 
+/* ===== Sidebar & Navigation ===== */
 /* Sidebar */
 .sidebar {
   width: var(--sidebar-width);
@@ -97,6 +99,8 @@ header h1 small {
 }
 header h1 small.running { background: var(--accent); color: #fff; }
 header h1 small.stopped { background: #555; color: #ccc; }
+
+/* ===== Header Controls ===== */
 .controls {
   display: flex;
   align-items: center;
@@ -138,6 +142,8 @@ main {
 section.hidden {
   display: none;
 }
+
+/* ===== Shared Elements ===== */
 h2 {
   font-size: 14px;
   text-transform: uppercase;
@@ -154,6 +160,8 @@ h2 {
   font-size: 12px;
   font-weight: 600;
 }
+
+/* ===== Loot Table ===== */
 table {
   width: 100%;
   border-collapse: collapse;
@@ -222,6 +230,7 @@ td.route {
 }
 
 /* Summary view */
+/* ===== Summary View ===== */
 .summary-header {
   margin-bottom: 24px;
 }
@@ -341,6 +350,7 @@ td.route {
   padding: 20px;
 }
 
+/* ===== Map View ===== */
 /* Map view */
 .map-section {
   background: var(--row);
@@ -388,6 +398,7 @@ td.route {
   color: var(--keep);
 }
 
+/* ===== Shop NPC Settings ===== */
 /* Shop NPC view */
 .shopnpc-controls {
   display: flex;
@@ -446,6 +457,7 @@ td.route {
   background: #e74c3c;
 }
 
+/* ===== NPC Toggle Controls ===== */
 /* Settings view */
 .settings-search {
   margin-bottom: 16px;
@@ -545,6 +557,7 @@ td.route {
   opacity: 0.85;
 }
 
+/* ===== Crafting View ===== */
 /* Crafting view */
 .crafting-controls {
   display: flex;
@@ -714,6 +727,7 @@ td.route {
   gap: 12px;
 }
 
+/* ===== History View ===== */
 .history-card {
   background: var(--row);
   border: 1px solid var(--border);
@@ -774,6 +788,7 @@ td.route {
   color: var(--favor);
 }
 
+/* ===== History Detail View ===== */
 /* History detail view */
 .history-detail-header {
   margin-bottom: 24px;
@@ -850,6 +865,7 @@ td.route {
   margin: 0 0 12px;
 }
 
+/* ===== Favor View ===== */
 /* Favor view */
 .favor-item {
   display: flex;
@@ -936,6 +952,7 @@ td.route {
   transform: translateX(20px);
 }
 
+/* ===== Settings View ===== */
 /* Settings Form */
 .settings-form {
   background: var(--row);
@@ -968,6 +985,8 @@ td.route {
   border-color: var(--accent);
   outline: none;
 }
+
+/* ===== Player Prices ===== */
 .form-help {
   display: block;
   margin-top: 6px;
@@ -1035,6 +1054,7 @@ td.route {
   border-color: var(--accent);
 }
 
+/* ===== Modals ===== */
 /* Modal */
 .modal {
   position: fixed;
@@ -1191,6 +1211,7 @@ td.route {
   background: var(--accent-hover);
 }
 
+/* ===== Trader View ===== */
 /* Traders view */
 .section-divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 .shopnpc-section { margin-bottom: 8px; }
@@ -1224,6 +1245,7 @@ td.route {
 }
 .save-btn:hover { opacity: 0.85; }
 .area-header-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+/* ===== Hidden Section ===== */
 .hidden-section { opacity: 0.7; }
 .hidden-header { font-style: italic; }
 .hidden-item-row { padding: 6px 12px; }
@@ -1506,6 +1528,7 @@ td.route {
   font-weight: 600;
 }
 
+/* ===== Warcache Solver ===== */
 /* Warcache solver */
 .warcache-symbols {
   display: flex;
@@ -1630,4 +1653,127 @@ td.route {
   margin-left: auto;
   font-weight: 600;
   color: var(--muted);
+}
+
+/* ===== Toast Notifications ===== */
+/* Toast notifications */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 10px 18px;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  z-index: 9999;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  animation: toast-in 0.2s ease;
+}
+.toast-error { background: #e74c3c; }
+.toast-success { background: #27ae60; }
+.toast-info { background: #3498db; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ===== Manual Loot Form ===== */
+.manual-loot-details {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.manual-loot-details summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+.manual-loot-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.manual-loot-form input {
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: 4px;
+  font: inherit;
+  width: 140px;
+}
+.manual-loot-form button {
+  padding: 6px 14px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+/* ===== Loot Row Delete Button ===== */
+.loot-del-btn {
+  background: none;
+  border: none;
+  color: #e74c3c;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.loot-del-btn:hover { opacity: 1; }
+
+/* ===== History Detail Actions ===== */
+.history-detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.delete-btn {
+  padding: 6px 14px;
+  background: #e74c3c;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+.delete-btn:hover { opacity: 0.85; }
+
+/* ===== History Detail Notes ===== */
+.history-detail-notes {
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: var(--row);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.detail-notes-text { flex: 1; }
+.detail-notes-empty { color: var(--muted); font-style: italic; }
+.edit-notes-btn, .save-notes-btn {
+  background: var(--border);
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+}
+.edit-notes-btn:hover, .save-notes-btn:hover { background: var(--accent); color: #fff; }
+#notes-edit-textarea {
+  width: 100%;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  color: var(--fg);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
 }

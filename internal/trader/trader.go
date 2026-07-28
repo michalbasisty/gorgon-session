@@ -82,27 +82,6 @@ func (m *Manager) Save() error {
 	return os.WriteFile(m.filePath, data, 0644)
 }
 
-// Add adds a new trader with the given limit and reset duration.
-func (m *Manager) Add(npcName, area string, weeklyLimit float64, resetDays, resetHours int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if _, exists := m.traders[npcName]; exists {
-		return nil // already exists
-	}
-
-	m.traders[npcName] = &Trader{
-		NPCName:      npcName,
-		Area:         area,
-		WeeklyLimit:  weeklyLimit,
-		SoldThisWeek: 0,
-		LastSale:     time.Time{}, // no sale yet
-		ResetDays:    resetDays,
-		ResetHours:   resetHours,
-	}
-	return nil
-}
-
 // Ensure creates a trader entry if it doesn't exist (with zero limit)
 func (m *Manager) Ensure(npcName, area string, resetDays, resetHours int) error {
 	m.mu.Lock()
@@ -149,25 +128,6 @@ func (m *Manager) Remove(npcName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.traders, npcName)
-}
-
-// Update modifies an existing trader's area, weekly limit, and reset duration.
-func (m *Manager) Update(npcName, area string, weeklyLimit float64, resetDays, resetHours int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	t, exists := m.traders[npcName]
-	if !exists {
-		return fmt.Errorf("trader %s not found", npcName)
-	}
-
-	t.Area = area
-	t.WeeklyLimit = weeklyLimit
-	if resetDays > 0 || resetHours > 0 {
-		t.ResetDays = resetDays
-		t.ResetHours = resetHours
-	}
-	return nil
 }
 
 // LogSale adds a sale amount to a trader, auto-resetting if needed.

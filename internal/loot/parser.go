@@ -19,6 +19,7 @@
 package loot
 
 import (
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -61,6 +62,7 @@ func New(lootRegex string) (*Parser, error) {
 	}
 	re, err := regexp.Compile(pat)
 	if err != nil {
+		log.Printf("loot regex %q failed to compile, using default: %v", pat, err)
 		re = regexp.MustCompile(DefaultRegex)
 	}
 	return &Parser{

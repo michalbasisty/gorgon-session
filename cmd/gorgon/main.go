@@ -23,15 +23,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yourname/gorgon-session/internal/cdn"
-	"github.com/yourname/gorgon-session/internal/config"
-	"github.com/yourname/gorgon-session/internal/favor"
-	"github.com/yourname/gorgon-session/internal/logtail"
-	"github.com/yourname/gorgon-session/internal/loot"
-	"github.com/yourname/gorgon-session/internal/server"
-	"github.com/yourname/gorgon-session/internal/session"
-	"github.com/yourname/gorgon-session/internal/trader"
-	"github.com/yourname/gorgon-session/web"
+	"github.com/michalbasisty/gorgon-session/internal/cdn"
+	"github.com/michalbasisty/gorgon-session/internal/config"
+	"github.com/michalbasisty/gorgon-session/internal/favor"
+	"github.com/michalbasisty/gorgon-session/internal/logtail"
+	"github.com/michalbasisty/gorgon-session/internal/loot"
+	"github.com/michalbasisty/gorgon-session/internal/server"
+	"github.com/michalbasisty/gorgon-session/internal/session"
+	"github.com/michalbasisty/gorgon-session/internal/trader"
+	"github.com/michalbasisty/gorgon-session/web"
 )
 
 func main() {

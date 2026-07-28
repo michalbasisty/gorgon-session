@@ -56,6 +56,15 @@
         <p id="empty" class="muted">no loot captured yet. enable the in-game chat log
           (chat window &gt; gear &gt; enable logging, or `/log`) and start a session
           below.</p>
+        <details class="manual-loot-details">
+          <summary>+ Add Loot Manually</summary>
+          <div class="manual-loot-form">
+            <input id="manual-loot-name" type="text" placeholder="item name" autocomplete="off">
+            <input id="manual-loot-value" type="number" placeholder="value (g)" min="0" autocomplete="off">
+            <input id="manual-loot-count" type="number" placeholder="count" min="1" value="1" autocomplete="off">
+            <button id="manual-loot-add">Add</button>
+          </div>
+        </details>
       </section>
 
       <!-- Summary view -->
@@ -105,6 +114,9 @@
             <span id="history-total-sessions">0 sessions</span>
             <span id="history-total-value">0g total</span>
           </div>
+          <div class="settings-search" style="margin-top:8px">
+            <input id="history-search" type="text" placeholder="search by dungeon or notes..." autocomplete="off">
+          </div>
         </div>
         <div id="history-list"></div>
       </section>
@@ -114,12 +126,16 @@
         <div class="history-detail-header">
           <button id="back-to-history" class="back-btn">← Back to History</button>
           <h2 id="history-detail-title">Session Details</h2>
-          <button id="export-csv" class="export-btn">Export CSV</button>
+          <div class="history-detail-actions">
+            <button id="export-csv" class="export-btn">Export CSV</button>
+            <button id="delete-session" class="delete-btn">Delete</button>
+          </div>
           <div class="history-detail-meta">
             <span id="history-detail-dungeon"></span>
             <span id="history-detail-date"></span>
             <span id="history-detail-duration"></span>
           </div>
+          <div id="history-detail-notes" class="history-detail-notes"></div>
         </div>
         <div class="history-detail-stats">
           <div class="stat-card">
@@ -250,6 +266,11 @@
     </main>
   </div>
 </div>
-<script src="app.js"></script>
+<script src="shared.js"></script>
+<script src="summary.js"></script>
+<script src="history.js"></script>
+<script src="favor-traders.js"></script>
+<script src="settings-warcache.js"></script>
+<script src="init.js"></script>
 </body>
 </html>
