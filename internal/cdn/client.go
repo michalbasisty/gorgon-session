@@ -102,32 +102,75 @@ func (c *Client) download(v Version, source string) ([]byte, error) {
 
 // Area represents one zone/area from areas.json.
 type Area struct {
-	AreaID        int    `json:"AreaID"`
-	Name          string `json:"Name"`
-	BreadcrumbName string `json:"BreadcrumbName"`
-	Parent        int    `json:"Parent"`
-	LevelMin      int    `json:"LevelMin,omitempty"`
-	LevelMax      int    `json:"LevelMax,omitempty"`
+	FriendlyName     string `json:"FriendlyName"`
+	ShortFriendlyName string `json:"ShortFriendlyName,omitempty"`
 }
 
-// AreasFile is the JSON root of areas.json (flat array).
-type AreasFile []Area
+// AreasFile is the JSON root of areas.json (map of internal key -> Area).
+type AreasFile map[string]Area
 
-// AreaIndex indexes areas by ID and name for fast lookup.
+// AreaIndex indexes areas by friendly name for lookups.
 type AreaIndex struct {
-	ByID   map[int]Area
-	ByName map[string]int // lowercase name -> AreaID
+	ByInternal map[string]Area // internal key -> Area
+	ByFriendly map[string]string // lowercase friendly name -> internal key
 }
 
 // IndexAreas builds AreaIndex from parsed areas.
 func IndexAreas(areas AreasFile) AreaIndex {
-	idx := AreaIndex{ByID: make(map[int]Area, len(areas)), ByName: make(map[string]int, len(areas))}
-	for _, a := range areas {
-		idx.ByID[a.AreaID] = a
-		idx.ByName[strings.ToLower(strings.TrimSpace(a.Name))] = a.AreaID
+	idx := AreaIndex{
+		ByInternal: make(map[string]Area, len(areas)),
+		ByFriendly: make(map[string]string, len(areas)),
+	}
+	for k, a := range areas {
+		idx.ByInternal[k] = a
+		if a.FriendlyName != "" {
+			idx.ByFriendly[strings.ToLower(strings.TrimSpace(a.FriendlyName))] = k
+		}
 	}
 	return idx
 }
+
+// RecipeIngredient is one material in a recipe.
+type RecipeIngredient struct {
+	ItemCode  int `json:"ItemCode"`
+	StackSize int `json:"StackSize"`
+}
+
+// RecipeResultItem is one result item.
+type RecipeResultItem struct {
+	ItemCode  int `json:"ItemCode"`
+	StackSize int `json:"StackSize"`
+}
+
+// Recipe from recipes.json.
+type Recipe struct {
+	InternalName          string              `json:"InternalName"`
+	Name                  string              `json:"Name"`
+	Description           string              `json:"Description,omitempty"`
+	Skill                 string              `json:"Skill"`
+	SkillLevelReq         int                 `json:"SkillLevelReq"`
+	Ingredients           []RecipeIngredient  `json:"Ingredients,omitempty"`
+	ResultItems           []RecipeResultItem  `json:"ResultItems,omitempty"`
+	RewardSkill           string              `json:"RewardSkill,omitempty"`
+	RewardSkillXp         int                 `json:"RewardSkillXp,omitempty"`
+	RewardSkillXpFirstTime int                `json:"RewardSkillXpFirstTime,omitempty"`
+}
+
+// RecipesFile is the JSON root of recipes.json (map of "recipe_N" -> Recipe).
+type RecipesFile map[string]Recipe
+
+// Skill from skills.json. Each key in the map is the skill name.
+// Uses CDN field names (PascalCase).
+type Skill struct {
+	Combat         bool   `json:"Combat"`
+	Description    string `json:"Description"`
+	MaxBonusLevels int    `json:"MaxBonusLevels"`
+	GuestLevelCap  int    `json:"GuestLevelCap"`
+	XpTable        string `json:"XpTable"`
+}
+
+// SkillsFile is the JSON root of skills.json (map of "SkillName" -> Skill).
+type SkillsFile map[string]Skill
 
 // ---- Typed source loaders ----------------------------------------------
 
@@ -137,7 +180,7 @@ type ItemsFile map[string]Item
 // Item is the subset of fields the dungeon-session app needs. Other fields
 // are kept in `Raw` for forward compatibility without re-parsing.
 type Item struct {
-	ItemID        int      `json:"-"` // populated by LoadItems from key name
+	ItemID        int      `json:"ItemID"` // populated by LoadItems from key name
 	InternalName  string   `json:"InternalName"`
 	Name          string   `json:"Name"`
 	Description   string   `json:"Description"`
@@ -229,6 +272,59 @@ func (c *Client) LoadAreas(v Version) (AreasFile, error) {
 		return nil, err
 	}
 	var f AreasFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// LoadSkills parses skills.json into typed form.
+func (c *Client) LoadSkills(v Version) (SkillsFile, error) {
+	b, err := c.Fetch(v, "skills")
+	if err != nil {
+		return nil, err
+	}
+	var f SkillsFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// LoadRecipes parses recipes.json into typed form.
+func (c *Client) LoadRecipes(v Version) (RecipesFile, error) {
+	b, err := c.Fetch(v, "recipes")
+	if err != nil {
+		return nil, err
+	}
+	var f RecipesFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// ---- Ability types ------------------------------------------------
+
+// Ability is one row from abilities.json.
+type Ability struct {
+	InternalName string  `json:"InternalName"`
+	Name         string  `json:"Name"`
+	Skill        string  `json:"Skill"`
+	DamageType   string  `json:"DamageType"`
+	BaseDamage   float64 `json:"PvE.BaseDamage"`
+}
+
+// AbilitiesFile is the JSON root of abilities.json (map of internal key -> Ability).
+type AbilitiesFile map[string]Ability
+
+// LoadAbilities parses abilities.json into typed form.
+func (c *Client) LoadAbilities(v Version) (AbilitiesFile, error) {
+	b, err := c.Fetch(v, "abilities")
+	if err != nil {
+		return nil, err
+	}
+	var f AbilitiesFile
 	if err := json.Unmarshal(b, &f); err != nil {
 		return nil, err
 	}

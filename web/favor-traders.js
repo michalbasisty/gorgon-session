@@ -130,20 +130,21 @@ window.toggleShowHiddenOnly = function() {
 async function renderTradersView() {
   const container = $('#traders-list');
   if (!container) return;
-  
-  container.innerHTML = '<div class="summary-empty">Loading traders...</div>';
-  
-  const areas = await api('/api/traders');
-  if (!areas) {
-    container.innerHTML = '<div class="summary-empty">Failed to load traders</div>';
-    return;
-  }
+  try {
+    container.innerHTML = '<div class="summary-empty">Loading traders...</div>';
+    
+    const areasResp = await api('/api/traders');
+    if (!areasResp) {
+      container.innerHTML = '<div class="summary-empty">Failed to load traders</div>';
+      return;
+    }
+    const areas = Array.isArray(areasResp) ? areasResp : [];
   
   const search = ($('#trader-search')?.value || '').toLowerCase();
   const showHiddenOnly = state.showHiddenOnly;
   
   // Sort areas alphabetically
-  areas.sort((a, b) => a.area.localeCompare(b.area));
+  areas.sort((a, b) => String(a?.area || '').localeCompare(String(b?.area || '')));
   
   container.innerHTML = '';
   const shopSet = new Set(state.shopNPCs);
@@ -155,13 +156,14 @@ async function renderTradersView() {
   if (btn) btn.classList.toggle('active', showHiddenOnly);
   
   for (const areaData of areas) {
+    const areaNPCs = Array.isArray(areaData?.npcs) ? areaData.npcs : [];
     // Sort NPCs by name
-    areaData.npcs.sort((a, b) => a.npc_name.localeCompare(b.npc_name));
-    const areaName = esc(areaData.area);
-    const areaHidden = state.hiddenAreas.has(areaData.area);
+    areaNPCs.sort((a, b) => String(a?.npc_name || '').localeCompare(String(b?.npc_name || '')));
+    const areaName = esc(areaData?.area || 'Unknown');
+    const areaHidden = state.hiddenAreas.has(areaData?.area || 'Unknown');
     
     // Collect hidden traders
-    const hiddenInArea = areaData.npcs.filter(n => state.hiddenTraders.has(n.npc_name));
+    const hiddenInArea = areaNPCs.filter(n => state.hiddenTraders.has(n.npc_name));
     for (const npc of hiddenInArea) {
       hiddenNpcs.push({ ...npc, area: areaData.area });
     }
@@ -170,11 +172,11 @@ async function renderTradersView() {
     if (showHiddenOnly) continue;
     
     // Filter visible traders
-    const visibleNpcs = areaData.npcs.filter(n => !state.hiddenTraders.has(n.npc_name));
+    const visibleNpcs = areaNPCs.filter(n => !state.hiddenTraders.has(n.npc_name));
     
     // Filter by search
     const filtered = search
-      ? visibleNpcs.filter(n => n.npc_name.toLowerCase().includes(search) || areaData.area.toLowerCase().includes(search))
+      ? visibleNpcs.filter(n => n.npc_name.toLowerCase().includes(search) || String(areaData?.area || '').toLowerCase().includes(search))
       : visibleNpcs;
     
     // Skip hidden areas (unless searching)
@@ -188,7 +190,7 @@ async function renderTradersView() {
     const header = document.createElement('div');
     header.className = 'trader-area-header';
     header.innerHTML = `
-      <span>${escapeHtml(areaData.area)} <span class="badge">${filtered.length}</span></span>
+      <span>${escapeHtml(areaData?.area || 'Unknown')} <span class="badge">${filtered.length}</span></span>
       <div class="area-header-actions">
         <button class="hide-btn" title="Hide region" onclick="toggleHideArea('${areaName}')">👁</button>
         <span class="collapse-icon">▼</span>
@@ -218,10 +220,10 @@ async function renderTradersView() {
       const row = document.createElement('div');
       row.className = 'trader-row' + (npc.unused_warning ? ' unused-warning' : '');
       row.dataset.npcName = npc.npc_name;
-      row.dataset.area = areaData.area;
+      row.dataset.area = areaData?.area || 'Unknown';
       
       const name = esc(npc.npc_name);
-      const area = esc(areaData.area);
+      const area = esc(areaData?.area || 'Unknown');
       
       row.innerHTML = `
         <div class="trader-row-top">
@@ -275,7 +277,8 @@ async function renderTradersView() {
     for (const area of state.hiddenAreas) {
       const areaData = areas.find(a => a.area === area);
       if (areaData) {
-        for (const npc of areaData.npcs) {
+        const nlist = Array.isArray(areaData.npcs) ? areaData.npcs : [];
+        for (const npc of nlist) {
           if (!allNames.has(npc.npc_name)) {
             allHidden.push({ ...npc, area });
             allNames.add(npc.npc_name);
@@ -343,8 +346,12 @@ async function renderTradersView() {
     container.appendChild(hiddenSection);
   }
   
-  if (container.children.length === 0) {
-    container.innerHTML = '<div class="summary-empty">No traders found</div>';
+    if (container.children.length === 0) {
+      container.innerHTML = '<div class="summary-empty">No traders found</div>';
+    }
+  } catch (e) {
+    console.error('renderTradersView failed', e);
+    container.innerHTML = `<div class="summary-empty">Traders render error: ${escapeHtml(e?.message || String(e))}</div>`;
   }
 }
 

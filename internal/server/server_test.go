@@ -22,7 +22,7 @@ func TestHandleSessionExport_NotFound(t *testing.T) {
 	cfg := config.Config{ReportDir: t.TempDir()}
 	srv := &Server{Cfg: cfg}
 
-	req := httptest.NewRequest("GET", "/api/session/nonexistent/export", nil)
+	req := httptest.NewRequest("GET", "/api/session/session-20990101-000000/export", nil)
 	w := httptest.NewRecorder()
 
 	srv.handleSessionByID(w, req)
@@ -36,13 +36,41 @@ func TestHandleSessionExport_NoReportDir(t *testing.T) {
 	cfg := config.Config{ReportDir: ""}
 	srv := &Server{Cfg: cfg}
 
-	req := httptest.NewRequest("GET", "/api/session/test/export", nil)
+	req := httptest.NewRequest("GET", "/api/session/session-20240101-120000/export", nil)
 	w := httptest.NewRecorder()
 
 	srv.handleSessionByID(w, req)
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestHandleSessionByID_InvalidID(t *testing.T) {
+	cfg := config.Config{ReportDir: t.TempDir()}
+	srv := &Server{Cfg: cfg}
+
+	req := httptest.NewRequest("GET", "/api/session/../../evil", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleSessionByID(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleSessionExport_InvalidID(t *testing.T) {
+	cfg := config.Config{ReportDir: t.TempDir()}
+	srv := &Server{Cfg: cfg}
+
+	req := httptest.NewRequest("GET", "/api/session/../../evil/export", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleSessionByID(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
 	}
 }
 
@@ -362,7 +390,7 @@ func TestHandleTraderPost_UpdateLimit(t *testing.T) {
 	traderMgr := trader.New(filepath.Join(td, "traders.json"))
 
 	srv := &Server{
-		Cfg:   config.Config{},
+		Cfg:    config.Config{},
 		Trader: traderMgr,
 	}
 
@@ -399,7 +427,7 @@ func TestHandleTraderPost_LogSale(t *testing.T) {
 	traderMgr.UpdateLimit("Merchant", 10000)
 
 	srv := &Server{
-		Cfg:   config.Config{},
+		Cfg:    config.Config{},
 		Trader: traderMgr,
 	}
 
@@ -424,6 +452,22 @@ func TestHandleTraderPost_LogSale(t *testing.T) {
 	}
 }
 
+func TestHandleBulkExport_InvalidID(t *testing.T) {
+	cfg := config.Config{ReportDir: t.TempDir()}
+	srv := &Server{Cfg: cfg}
+
+	body := `{"ids":["../evil"]}`
+	req := httptest.NewRequest("POST", "/api/sessions/bulk-export", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.handleBulkExport(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
 func TestHandleSessionExport_AllVerdicts(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := config.Config{ReportDir: tmpDir}
@@ -437,19 +481,19 @@ func TestHandleSessionExport_AllVerdicts(t *testing.T) {
 		EndedAt:   time.Now(),
 		Loot: []session.LootEntry{
 			{
-				Name:   "Favor Item",
+				Name:     "Favor Item",
 				Decision: favor.Decision{Verdict: favor.VerdictFavor},
 			},
 			{
-				Name:   "Vendor Item",
+				Name:     "Vendor Item",
 				Decision: favor.Decision{Verdict: favor.VerdictSellVendor},
 			},
 			{
-				Name:   "Consignment Item",
+				Name:     "Consignment Item",
 				Decision: favor.Decision{Verdict: favor.VerdictSellConsignment},
 			},
 			{
-				Name:   "Keep Item",
+				Name:     "Keep Item",
 				Decision: favor.Decision{Verdict: favor.VerdictKeep},
 			},
 		},

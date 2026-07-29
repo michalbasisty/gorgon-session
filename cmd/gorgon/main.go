@@ -99,6 +99,27 @@ func main() {
 	areaIdx := cdn.IndexAreas(areas)
 	log.Printf("loaded %d areas", len(areas))
 
+	skills, err := client.LoadSkills(ver)
+	if err != nil {
+		log.Printf("load skills.json: %v (skill enrichment disabled)", err)
+		skills = cdn.SkillsFile{}
+	}
+	log.Printf("loaded %d skills", len(skills))
+
+	recipes, err := client.LoadRecipes(ver)
+	if err != nil {
+		log.Printf("load recipes.json: %v (recipe browser disabled)", err)
+		recipes = cdn.RecipesFile{}
+	}
+	log.Printf("loaded %d recipes", len(recipes))
+
+	abilities, err := client.LoadAbilities(ver)
+	if err != nil {
+		log.Printf("load abilities.json: %v (combat stats disabled)", err)
+		abilities = cdn.AbilitiesFile{}
+	}
+	log.Printf("loaded %d abilities", len(abilities))
+
 	nameIdx := indexItemsByName(items)
 	engine := favor.FromNpcs(npcs)
 	engine.SetPlayerPrices(cfg.PlayerPrices)
@@ -160,7 +181,7 @@ func main() {
 
 	// Pass the embedded web FS directly; the embed directive in web/embed.go
 	// uses bare filenames so paths inside the FS have no "web/" prefix.
-	srv := server.New(cfg, mgr, engine, web.Files, t, plTail, parser, traderMgr, items, ver, areaIdx)
+	srv := server.New(cfg, mgr, engine, web.Files, t, plTail, parser, traderMgr, items, ver, areaIdx, skills, recipes, abilities)
 	h := srv.Mount()
 	hs := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -175,23 +196,25 @@ func main() {
 	}()
 
 	// Auto-backup: every 60 minutes, copy config + reports to backup dir
-	backupDir := filepath.Join(filepath.Dir(cfg.ReportDir), "backups")
-	_ = os.MkdirAll(backupDir, 0o755)
-	go func() {
-		ticker := time.NewTicker(60 * time.Minute)
-		defer ticker.Stop()
-		// Also do one initial backup 30s after startup
-		time.Sleep(30 * time.Second)
-		backupOnce(cfg, backupDir)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				backupOnce(cfg, backupDir)
+	if cfg.BackupEnabled {
+		backupDir := filepath.Join(filepath.Dir(cfg.ReportDir), "backups")
+		_ = os.MkdirAll(backupDir, 0o755)
+		go func() {
+			ticker := time.NewTicker(60 * time.Minute)
+			defer ticker.Stop()
+			// Also do one initial backup 30s after startup
+			time.Sleep(30 * time.Second)
+			backupOnce(cfg, backupDir)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					backupOnce(cfg, backupDir)
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Open browser after a short delay to let server start
 	go func() {
@@ -402,6 +425,10 @@ func playerPipeline(ctx context.Context, t *logtail.FileTailer, p *playerlog.Par
 				// Login events can be used later for auto-session start
 			case playerlog.KindSkill:
 				// Skill ticks are granular; we already get "You earned N XP" from ChatLogs
+			case playerlog.KindUseAbility:
+				mgr.AddAbilityUse(ev.AbilityName)
+			case playerlog.KindOnAttackHitMe:
+				mgr.AddCombatHit(ev.AbilityName)
 			}
 		}
 	}

@@ -22,18 +22,22 @@ import (
 type Kind string
 
 const (
-	KindLogin Kind = "login"
-	KindZone  Kind = "zone"
-	KindSkill Kind = "skill"
+	KindLogin         Kind = "login"
+	KindZone          Kind = "zone"
+	KindSkill         Kind = "skill"
+	KindUseAbility    Kind = "use_ability"
+	KindOnAttackHitMe Kind = "on_attack_hit_me"
 )
 
 // Event is one parsed line from Player.log.
 type Event struct {
-	Raw   string // original line
-	Kind  Kind
-	Zone  string // zone name
-	Skill string // skill name
-	Value int    // skill tick value (always 0 for [WW] but future-proof)
+	Raw         string // original line
+	Kind        Kind
+	Zone        string // zone name
+	Skill       string // skill name
+	Value       int    // skill tick value (always 0 for [WW] but future-proof)
+	AbilityName string // ability name (from UseAbility / OnAttackHitMe)
+	AbilityID   int    // ability ID
 }
 
 var (
@@ -41,6 +45,10 @@ var (
 	zoneRe  = regexp.MustCompile(`You have entered (.+?)\.$`)
 	// [HH:MM:SS] [Status] [WW] Skill 'Name' gained 0.00
 	skillRe = regexp.MustCompile(`\[Status\]\s+\[WW\]\s+Skill '(.+?)' gained (\d+\.?\d*)`)
+	// UseAbility(Ability(Name,ID))
+	useAbilityRe = regexp.MustCompile(`UseAbility\(Ability\(([^,]+),(\d+)\)\)`)
+	// entity_XXXXX: OnAttackHitMe(Ability(Name,ID))
+	onAttackHitMeRe = regexp.MustCompile(`entity_\d+: OnAttackHitMe\(Ability\(([^,]+),(\d+)\)\)`)
 )
 
 // Parser converts Player.log lines into typed events.
@@ -82,6 +90,18 @@ func (p *Parser) ParseLine(line string) *Event {
 			v = int(f)
 		}
 		return &Event{Raw: line, Kind: KindSkill, Skill: s, Value: v}
+	}
+
+	// UseAbility
+	if m := useAbilityRe.FindStringSubmatch(body); m != nil {
+		id, _ := strconv.Atoi(m[2])
+		return &Event{Raw: line, Kind: KindUseAbility, AbilityName: strings.TrimSpace(m[1]), AbilityID: id}
+	}
+
+	// OnAttackHitMe
+	if m := onAttackHitMeRe.FindStringSubmatch(body); m != nil {
+		id, _ := strconv.Atoi(m[2])
+		return &Event{Raw: line, Kind: KindOnAttackHitMe, AbilityName: strings.TrimSpace(m[1]), AbilityID: id}
 	}
 
 	return nil

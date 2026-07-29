@@ -9,46 +9,97 @@
 body {
   background: transparent !important;
   font-family: 'Segoe UI', system-ui, sans-serif;
-  font-size: 14px;
+  font-size: 13px;
   color: #e0e0e0;
   overflow: hidden;
   user-select: none;
+  pointer-events: none;
 }
-#app { padding: 8px; }
+#app {
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* Session bar */
 .overlay-session {
-  background: rgba(0,0,0,0.5);
-  border-radius: 8px;
-  padding: 8px 12px;
-  margin-bottom: 6px;
+  background: rgba(0,0,0,0.55);
+  border-radius: 6px;
+  padding: 6px 10px;
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
-.overlay-session .dungeon { font-weight: 600; font-size: 15px; }
-.overlay-session .timer { color: #7a7f8a; font-size: 13px; }
+.overlay-session .dungeon { font-weight: 600; font-size: 14px; }
+.overlay-session .timer { color: #7a7f8a; font-size: 12px; }
 .overlay-session .badge {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: 10px;
   font-weight: 600;
 }
 .badge.running { background: #2ecc71; color: #000; }
 .badge.stopped { background: #e67e22; color: #000; }
 .badge.idle { background: #555; color: #ccc; }
+
+/* Zone */
+.overlay-zone {
+  background: rgba(0,0,0,0.4);
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #7a7f8a;
+  text-align: center;
+}
+.overlay-zone .zone-name { color: #e0e0e0; font-weight: 600; }
+
+/* Two-column info row */
+.info-row {
+  display: flex;
+  gap: 4px;
+}
+.info-box {
+  flex: 1;
+  background: rgba(0,0,0,0.4);
+  border-radius: 4px;
+  padding: 4px 8px;
+  text-align: center;
+}
+.info-box .label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #7a7f8a;
+}
+.info-box .value {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e0e0e0;
+  margin-top: 1px;
+}
+.info-box .value.gold { color: #f1c40f; }
+.info-box .value.dps { color: #e74c3c; }
+.info-box .value.favor { color: #2ecc71; }
+
+/* Loot section */
 .overlay-loot {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
+  max-height: 300px;
+  overflow-y: auto;
 }
+.overlay-loot::-webkit-scrollbar { width: 4px; }
+.overlay-loot::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
 .loot-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 8px;
+  padding: 3px 8px;
   background: rgba(0,0,0,0.3);
-  border-radius: 4px;
-  font-size: 13px;
+  border-radius: 3px;
+  font-size: 12px;
   animation: fadeIn 0.3s;
   border-left: 3px solid transparent;
 }
@@ -56,26 +107,69 @@ body {
 .loot-row.verdict-sell_vendor { border-left-color: #f39c12; }
 .loot-row.verdict-sell_consignment { border-left-color: #9b59b6; }
 .loot-row.verdict-keep { border-left-color: #7a7f8a; }
-.loot-row .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.loot-row .value { color: #f1c40f; font-weight:600; margin-left:8px; white-space:nowrap; }
-.loot-row .verdict-label { font-size:11px; color:#7a7f8a; margin-left:8px; white-space:nowrap; }
-.loot-count { color: var(--muted,#7a7f8a); font-size:12px; margin-bottom:4px; }
-@keyframes fadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
-.empty { color: #555; font-size: 12px; text-align: center; padding: 20px; }
+.loot-row .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size: 12px; }
+.loot-row .value { color: #f1c40f; font-weight:600; margin-left:6px; white-space:nowrap; font-size: 11px; }
+.loot-row .verdict-label { font-size:10px; color:#7a7f8a; margin-left:6px; white-space:nowrap; }
+.loot-count { color: #7a7f8a; font-size: 11px; margin-bottom: 2px; }
+.loot-count span { color: #e0e0e0; font-weight: 600; }
+
+/* Trader capacity */
+.overlay-traders {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.trader-mini {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 8px;
+  background: rgba(0,0,0,0.25);
+  border-radius: 3px;
+  font-size: 10px;
+}
+.trader-mini .name { color: #7a7f8a; }
+.trader-mini .cap { font-weight: 600; }
+.trader-mini .cap.full { color: #e74c3c; }
+.trader-mini .cap.ok { color: #2ecc71; }
+
+@keyframes fadeIn { from { opacity:0; transform:translateY(-3px); } to { opacity:1; transform:translateY(0); } }
+.empty { color: #555; font-size: 11px; text-align: center; padding: 12px; }
 </style>
 </head>
 <body>
 <div id="app">
+  <!-- Session state -->
   <div class="overlay-session">
     <div><span class="dungeon" id="o-dungeon">—</span><span class="timer" id="o-timer"></span></div>
     <span class="badge idle" id="o-badge">idle</span>
   </div>
-  <div class="loot-count" id="o-count"></div>
+
+  <!-- Current zone -->
+  <div class="overlay-zone"><span class="zone-name" id="o-zone">—</span></div>
+
+  <!-- Quick stats -->
+  <div class="info-row">
+    <div class="info-box"><div class="label">DPS</div><div class="value dps" id="o-dps">—</div></div>
+    <div class="info-box"><div class="label">Abilities</div><div class="value" id="o-abilities">0</div></div>
+    <div class="info-box"><div class="label">Loot Value</div><div class="value gold" id="o-loot-value">0g</div></div>
+    <div class="info-box"><div class="label">Gold</div><div class="value gold" id="o-gold">0g</div></div>
+  </div>
+
+  <!-- Latest loot items -->
+  <div class="loot-count" id="o-count"><span>0</span> items</div>
   <div class="overlay-loot" id="o-loot"></div>
+
+  <!-- Trader capacity alerts -->
+  <div class="overlay-traders" id="o-traders"></div>
+
+  <!-- Session summary -->
+  <div class="overlay-zone" style="font-size:10px;padding:2px 8px;display:none" id="o-summary">
+    <span id="o-summary-kills">0 kills</span> · <span id="o-summary-xp">0 xp</span>
+  </div>
 </div>
 <script>
-const MAX_ITEMS = 50;
-const LOOT = [];
+const MAX_ITEMS = 40;
+const LOOT = new Map(); // name -> { data, count }
 
 function $(s) { return document.querySelector(s); }
 function fmt(t) { const d=new Date(t); return d.toLocaleTimeString([],{hour12:false,hour:'2-digit',minute:'2-digit'}); }
@@ -98,6 +192,8 @@ function updateSession(session) {
     b.textContent = 'idle'; b.className = 'badge idle';
     t.textContent = '';
     if (sessionTimer) { clearInterval(sessionTimer); sessionTimer=null; }
+    updateZone('');
+    updateStats(null);
     return;
   }
   d.textContent = session.dungeon || 'unnamed';
@@ -111,49 +207,166 @@ function updateSession(session) {
   if (session.state !== 'running' && sessionTimer) {
     clearInterval(sessionTimer); sessionTimer=null;
   }
+  updateZone(session.zone || '');
+  updateStats(session);
+}
+
+function updateZone(zone) {
+  const el = $('#o-zone');
+  if (!el) return;
+  el.textContent = zone || '—';
+}
+
+function updateStats(session) {
+  const hasCombat = session && session.ability_counts && Object.keys(session.ability_counts).length > 0;
+  if (!session || session.state === 'idle') {
+    $('#o-dps').textContent = '—';
+    $('#o-abilities').textContent = '0';
+    $('#o-loot-value').textContent = '0g';
+    $('#o-gold').textContent = '0g';
+    $('#o-summary').style.display = 'none';
+    return;
+  }
+
+  // Total ability uses
+  const totalUses = Object.values(session.ability_counts || {}).reduce((s, c) => s + c, 0);
+  const abils = Object.keys(session.ability_counts || {}).length;
+  $('#o-abilities').textContent = abils + '/' + totalUses;
+
+  // Total loot value
+  const lootValue = (session.loot || []).reduce((s, l) => s + (l.value || 0) * (l.count || 0), 0);
+  $('#o-loot-value').textContent = lootValue.toFixed(0) + 'g';
+
+  // Gold
+  $('#o-gold').textContent = (session.total_gold || 0) + 'g';
+
+  // DPS — fetch from combat endpoint
+  fetch('/api/combat').then(r => r.json()).then(data => {
+    if (!data || data.length === 0) { $('#o-dps').textContent = '—'; return; }
+    const totalDPS = data.reduce((s, a) => s + (a.est_dps || 0), 0);
+    $('#o-dps').textContent = totalDPS.toFixed(1);
+  }).catch(() => { $('#o-dps').textContent = '—'; });
+
+  // Trader capacity — fetch from traders endpoint
+  fetch('/api/traders').then(r => r.json()).then(areas => {
+    const container = $('#o-traders');
+    if (!container) return;
+    const alerts = [];
+    for (const area of areas || []) {
+      for (const npc of area.npcs || []) {
+        const limit = npc.weekly_limit || 0;
+        const sold = npc.sold_this_week || 0;
+        const remaining = limit - sold;
+        if (limit > 0 && remaining < limit * 0.3) {
+          alerts.push({ name: npc.npc_name, remaining: Math.max(0, remaining), limit });
+        }
+      }
+    }
+    if (alerts.length === 0) { container.innerHTML = ''; return; }
+    container.innerHTML = alerts.slice(0, 5).map(n =>
+      `<div class="trader-mini"><span class="name">${esc(n.name)}</span><span class="cap ${n.remaining <= 0 ? 'full' : 'ok'}">${Math.round(n.remaining).toLocaleString()}/${Math.round(n.limit).toLocaleString()}g</span></div>`
+    ).join('');
+  }).catch(() => {});
+
+  // Session summary
+  const kills = (session.kills || []).length;
+  const xpCount = (session.xp_gains || []).length;
+  const sumEl = $('#o-summary');
+  if (!sumEl) return;
+  if (kills || xpCount) {
+    sumEl.style.display = '';
+    $('#o-summary-kills').textContent = '⚔ ' + kills + ' kill' + (kills !== 1 ? 's' : '');
+    $('#o-summary-xp').textContent = '⬆ ' + xpCount + ' xp gain' + (xpCount !== 1 ? 's' : '');
+  } else {
+    sumEl.style.display = 'none';
+  }
 }
 
 function addLoot(loot) {
-  LOOT.unshift(loot);
-  if (LOOT.length > MAX_ITEMS) LOOT.length = MAX_ITEMS;
+  // Deduplicate by name — merge count, keep latest
+  const key = loot.name;
+  if (LOOT.has(key)) {
+    const existing = LOOT.get(key);
+    existing.data = loot;
+    existing.count++;
+  } else {
+    LOOT.set(key, { data: loot, count: 1 });
+    // Trim oldest entries if we exceed MAX_ITEMS
+    if (LOOT.size > MAX_ITEMS) {
+      const first = LOOT.keys().next().value;
+      if (first) LOOT.delete(first);
+    }
+  }
+  renderLoot();
+}
+
+function setLoot(items) {
+  LOOT.clear();
+  for (const l of items || []) {
+    LOOT.set(l.name, { data: l, count: 1 });
+  }
   renderLoot();
 }
 
 function renderLoot() {
   const container=$('#o-loot');
   if (!container) return;
-  $('#o-count').textContent = LOOT.length + ' items';
-  container.innerHTML = LOOT.map(l => {
+  const total = LOOT.size;
+  const countEl = $('#o-count');
+  if (countEl) countEl.innerHTML = '<span>' + total + '</span> item' + (total !== 1 ? 's' : '');
+  // Show newest first (reverse iteration)
+  const entries = [...LOOT.entries()].reverse();
+  container.innerHTML = entries.map(([name, entry]) => {
+    const l = entry.data;
     const v = l.verdict || (l.decision&&l.decision.verdict) || '';
     const val = l.value || l.valor || 0;
-    return '<div class="loot-row verdict-' + v + '"><span class="name">' + esc(l.name) + '</span>' +
-      '<span class="value">' + val.toFixed(0) + 'g</span>' +
+    return '<div class="loot-row verdict-' + v + '"><span class="name">' + esc(name) + (entry.count > 1 ? ' <span style="color:#7a7f8a">x' + entry.count + '</span>' : '') + '</span>' +
+      '<span class="value">' + (val * entry.count).toFixed(0) + 'g</span>' +
       '<span class="verdict-label">' + esc(v.replace(/_/g,' ')) + '</span></div>';
   }).join('');
 }
 
+let __overlaySessionInFlight = false;
 async function refreshSession() {
+  if (__overlaySessionInFlight) return;
+  __overlaySessionInFlight = true;
   try {
-    const r = await fetch('/api/session');
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 10000);
+    const r = await fetch('/api/session', { signal: ctrl.signal });
+    clearTimeout(t);
     if (r.ok) {
       const s = await r.json();
       updateSession(s);
-      if (s && s.loot) {
-        for (const l of s.loot) addLoot(l);
-      }
+      if (s && s.loot) setLoot(s.loot);
+      updateStats(s);
     }
   } catch {}
+  finally { __overlaySessionInFlight = false; }
 }
 refreshSession();
 
-const es = new EventSource('/api/feed');
-es.onmessage = ev => {
+let __overlayCombatInFlight = false;
+async function refreshCombat() {
+  if (__overlayCombatInFlight) return;
+  __overlayCombatInFlight = true;
   try {
-    const data = JSON.parse(ev.data);
-    if (data.kind === 'session_start' || data.kind === 'session_stop') refreshSession();
-    if (data.kind === 'loot' && data.payload) addLoot(data.payload);
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 10000);
+    const r = await fetch('/api/session', { signal: ctrl.signal });
+    clearTimeout(t);
+    if (r.ok) {
+      const s = await r.json();
+      updateStats(s);
+    }
   } catch {}
-};
+  finally { __overlayCombatInFlight = false; }
+}
+// Refresh combat stats every 5s for live DPS updates
+setInterval(refreshCombat, 5000);
+
+// Polling update loop (avoids one EventSource per overlay window)
+setInterval(refreshSession, 2500);
 </script>
 </body>
 </html>

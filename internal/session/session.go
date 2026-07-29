@@ -23,8 +23,8 @@ type XPGain struct {
 
 // DeathEvent records one death.
 type DeathEvent struct {
-	Time  time.Time `json:"time"`
-	Killer string  `json:"killer,omitempty"`
+	Time   time.Time `json:"time"`
+	Killer string    `json:"killer,omitempty"`
 }
 
 // KillEvent records one mob kill.
@@ -53,6 +53,18 @@ type ZoneEntry struct {
 	Time time.Time `json:"time"`
 }
 
+// AbilityUseEvent records one ability use (from UseAbility in Player.log).
+type AbilityUseEvent struct {
+	Name string    `json:"name"`
+	Time time.Time `json:"time"`
+}
+
+// CombatHitEvent records an outgoing hit (entity_XXX: OnAttackHitMe).
+type CombatHitEvent struct {
+	Ability string    `json:"ability"`
+	Time    time.Time `json:"time"`
+}
+
 var (
 	ErrAlreadyRunning = errors.New("a session is already running")
 	ErrNotRunning     = errors.New("no session is currently running")
@@ -62,71 +74,80 @@ var (
 type State string
 
 const (
-	Idle       State = "idle"
-	Running    State = "running"
-	Stopped    State = "stopped"
+	Idle    State = "idle"
+	Running State = "running"
+	Stopped State = "stopped"
 )
 
 // Manager holds one active session at a time (design simplification for the
 // dungeon-session MVP; can be lifted trivially to multi-session later).
 type Manager struct {
-	mu     sync.RWMutex
-	state  State
-	dungeon string
-	notes   string
+	mu        sync.RWMutex
+	state     State
+	dungeon   string
+	notes     string
 	startedAt time.Time
 	endedAt   time.Time
 
-	loot   []LootEntry   // chronological
+	loot   []LootEntry    // chronological
 	byItem map[string]int // itemName -> index in loot
 	counts map[string]int // itemName -> total count
 
 	// non-loot events collected during the session
-	xpGains    []XPGain
-	deaths     []DeathEvent
-	kills      []KillEvent
-	gathering  []GatherEvent
-	levelUps   []LevelUp
-	totalGold  int
+	xpGains   []XPGain
+	deaths    []DeathEvent
+	kills     []KillEvent
+	gathering []GatherEvent
+	levelUps  []LevelUp
+	totalGold int
 
 	// zone tracking (from Player.log)
-	zone       string
+	zone        string
 	zoneHistory []ZoneEntry
 
-	events     chan Event // events for SSE subscribers
-	stopCh     chan struct{}
-	subscribersMtx sync.Mutex
+	// combat tracking (from Player.log)
+	abilityUses   []AbilityUseEvent
+	combatHits    []CombatHitEvent
+	abilityCounts map[string]int // ability name -> use count
+	hitCounts     map[string]int // ability name -> outgoing hit count
+
+	subscribersMtx sync.RWMutex
+	subscribers    map[chan Event]struct{}
+	closed         bool
 }
 
 // Event is anything the UI may want to push to clients. Only Loot kinds
 // are emitted today; reserved for combat/crafting later.
 type Event struct {
-	Kind    string      `json:"kind"`     // "loot", "session_start", "session_stop"
+	Kind    string      `json:"kind"` // "loot", "session_start", "session_stop"
 	Time    time.Time   `json:"time"`
 	Payload interface{} `json:"payload,omitempty"`
 }
 
 // LootEntry is one item's aggregated record in a session: count + decisions.
 type LootEntry struct {
-	Name      string          `json:"name"`
-	ItemID    int             `json:"item_id"`
-	IconURL   string          `json:"icon_url,omitempty"`
-	Valor     float64         `json:"value"`
-	Count     int             `json:"count"`
-	Bonus     bool            `json:"bonus"`
-	FirstSeen time.Time       `json:"first_seen"`
-	LastSeen  time.Time       `json:"last_seen"`
-	Decision  favor.Decision  `json:"decision"`
+	Name      string         `json:"name"`
+	ItemID    int            `json:"item_id"`
+	IconURL   string         `json:"icon_url,omitempty"`
+	Valor     float64        `json:"value"`
+	Count     int            `json:"count"`
+	Bonus     bool           `json:"bonus"`
+	FirstSeen time.Time      `json:"first_seen"`
+	LastSeen  time.Time      `json:"last_seen"`
+	Decision  favor.Decision `json:"decision"`
+	Note      string         `json:"note,omitempty"`
 }
 
 // New constructs a Manager.
 func New() *Manager {
 	return &Manager{
-		state:   Idle,
-		loot:    []LootEntry{},
-		byItem:  map[string]int{},
-		counts:  map[string]int{},
-		events:  make(chan Event, 4096),
+		state:         Idle,
+		loot:          []LootEntry{},
+		byItem:        map[string]int{},
+		counts:        map[string]int{},
+		abilityCounts: map[string]int{},
+		hitCounts:     map[string]int{},
+		subscribers:   map[chan Event]struct{}{},
 	}
 }
 
@@ -153,6 +174,10 @@ func (m *Manager) Start(dungeon, notes string) error {
 	m.totalGold = 0
 	m.zone = ""
 	m.zoneHistory = m.zoneHistory[:0]
+	m.abilityUses = m.abilityUses[:0]
+	m.combatHits = m.combatHits[:0]
+	m.abilityCounts = map[string]int{}
+	m.hitCounts = map[string]int{}
 	m.publish(Event{Kind: "session_start", Time: m.startedAt, Payload: map[string]string{"dungeon": dungeon, "notes": notes}})
 	return nil
 }
@@ -189,19 +214,19 @@ func (m *Manager) Snapshot() Snapshot {
 
 func (m *Manager) snapshotLocked() Snapshot {
 	out := Snapshot{
-		State:      m.state,
-		Dungeon:    m.dungeon,
-		Notes:      m.notes,
-		StartedAt:  m.startedAt,
-		EndedAt:    m.endedAt,
-		Loot:       make([]LootEntry, len(m.loot)),
-		XPGains:    make([]XPGain, len(m.xpGains)),
-		Deaths:     make([]DeathEvent, len(m.deaths)),
-		Kills:      make([]KillEvent, len(m.kills)),
-		Gathering:  make([]GatherEvent, len(m.gathering)),
-		LevelUps:   make([]LevelUp, len(m.levelUps)),
-		TotalGold:  m.totalGold,
-		Zone:       m.zone,
+		State:       m.state,
+		Dungeon:     m.dungeon,
+		Notes:       m.notes,
+		StartedAt:   m.startedAt,
+		EndedAt:     m.endedAt,
+		Loot:        make([]LootEntry, len(m.loot)),
+		XPGains:     make([]XPGain, len(m.xpGains)),
+		Deaths:      make([]DeathEvent, len(m.deaths)),
+		Kills:       make([]KillEvent, len(m.kills)),
+		Gathering:   make([]GatherEvent, len(m.gathering)),
+		LevelUps:    make([]LevelUp, len(m.levelUps)),
+		TotalGold:   m.totalGold,
+		Zone:        m.zone,
 		ZoneHistory: make([]ZoneEntry, len(m.zoneHistory)),
 	}
 	copy(out.Loot, m.loot)
@@ -211,25 +236,41 @@ func (m *Manager) snapshotLocked() Snapshot {
 	copy(out.Gathering, m.gathering)
 	copy(out.LevelUps, m.levelUps)
 	copy(out.ZoneHistory, m.zoneHistory)
+	out.AbilityUses = make([]AbilityUseEvent, len(m.abilityUses))
+	copy(out.AbilityUses, m.abilityUses)
+	out.CombatHits = make([]CombatHitEvent, len(m.combatHits))
+	copy(out.CombatHits, m.combatHits)
+	out.AbilityCounts = make(map[string]int, len(m.abilityCounts))
+	for k, v := range m.abilityCounts {
+		out.AbilityCounts[k] = v
+	}
+	out.HitCounts = make(map[string]int, len(m.hitCounts))
+	for k, v := range m.hitCounts {
+		out.HitCounts[k] = v
+	}
 	return out
 }
 
 // Snapshot is a JSON-serializable copy of the current session.
 type Snapshot struct {
-	State     State       `json:"state"`
-	Dungeon   string      `json:"dungeon"`
-	Notes     string      `json:"notes,omitempty"`
-	StartedAt time.Time   `json:"started_at"`
-	EndedAt   time.Time   `json:"ended_at"`
-	Loot      []LootEntry `json:"loot"`
-	XPGains    []XPGain    `json:"xp_gains,omitempty"`
-	Deaths     []DeathEvent `json:"deaths,omitempty"`
-	Kills      []KillEvent  `json:"kills,omitempty"`
-	Gathering  []GatherEvent `json:"gathering,omitempty"`
-	LevelUps   []LevelUp    `json:"level_ups,omitempty"`
-	TotalGold  int          `json:"total_gold"`
-	Zone       string       `json:"zone,omitempty"`
-	ZoneHistory []ZoneEntry `json:"zone_history,omitempty"`
+	State         State             `json:"state"`
+	Dungeon       string            `json:"dungeon"`
+	Notes         string            `json:"notes,omitempty"`
+	StartedAt     time.Time         `json:"started_at"`
+	EndedAt       time.Time         `json:"ended_at"`
+	Loot          []LootEntry       `json:"loot"`
+	XPGains       []XPGain          `json:"xp_gains,omitempty"`
+	Deaths        []DeathEvent      `json:"deaths,omitempty"`
+	Kills         []KillEvent       `json:"kills,omitempty"`
+	Gathering     []GatherEvent     `json:"gathering,omitempty"`
+	LevelUps      []LevelUp         `json:"level_ups,omitempty"`
+	TotalGold     int               `json:"total_gold"`
+	Zone          string            `json:"zone,omitempty"`
+	ZoneHistory   []ZoneEntry       `json:"zone_history,omitempty"`
+	AbilityUses   []AbilityUseEvent `json:"ability_uses,omitempty"`
+	CombatHits    []CombatHitEvent  `json:"combat_hits,omitempty"`
+	AbilityCounts map[string]int    `json:"ability_counts,omitempty"`
+	HitCounts     map[string]int    `json:"hit_counts,omitempty"`
 }
 
 // AddLoot records one looted item (or increments an existing entry).
@@ -353,6 +394,34 @@ func (m *Manager) SetZone(zone string) {
 	m.publish(Event{Kind: "zone", Time: time.Now(), Payload: map[string]string{"zone": zone}})
 }
 
+// AddAbilityUse records an ability use (from Player.log UseAbility).
+func (m *Manager) AddAbilityUse(name string) {
+	m.mu.Lock()
+	if m.state != Running {
+		m.mu.Unlock()
+		return
+	}
+	e := AbilityUseEvent{Name: name, Time: time.Now()}
+	m.abilityUses = append(m.abilityUses, e)
+	m.abilityCounts[name]++
+	m.mu.Unlock()
+	m.publish(Event{Kind: "ability_use", Time: e.Time, Payload: e})
+}
+
+// AddCombatHit records an outgoing combat hit (entity_XXX: OnAttackHitMe).
+func (m *Manager) AddCombatHit(ability string) {
+	m.mu.Lock()
+	if m.state != Running {
+		m.mu.Unlock()
+		return
+	}
+	e := CombatHitEvent{Ability: ability, Time: time.Now()}
+	m.combatHits = append(m.combatHits, e)
+	m.hitCounts[ability]++
+	m.mu.Unlock()
+	m.publish(Event{Kind: "combat_hit", Time: e.Time, Payload: e})
+}
+
 // RemoveLoot removes entries matching name from the active session.
 func (m *Manager) RemoveLoot(name string) bool {
 	m.mu.Lock()
@@ -373,6 +442,21 @@ func (m *Manager) RemoveLoot(name string) bool {
 	return true
 }
 
+// SetLootNote sets the note on a loot entry in the active session.
+func (m *Manager) SetLootNote(name, note string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state != Running {
+		return false
+	}
+	idx, ok := m.byItem[name]
+	if !ok {
+		return false
+	}
+	m.loot[idx].Note = note
+	return true
+}
+
 // SetNotes updates the active session's notes.
 func (m *Manager) SetNotes(notes string) {
 	m.mu.Lock()
@@ -380,18 +464,63 @@ func (m *Manager) SetNotes(notes string) {
 	m.notes = notes
 }
 
-// Events returns the broadcast channel SSE handlers consume.
-func (m *Manager) Events() <-chan Event { return m.events }
+// Subscribe registers a new event subscriber channel and returns an
+// unsubscribe function. Delivery is best-effort; slow subscribers may drop
+// events under backpressure.
+func (m *Manager) Subscribe() (<-chan Event, func()) {
+	ch := make(chan Event, 256)
+	m.subscribersMtx.Lock()
+	if m.closed {
+		m.subscribersMtx.Unlock()
+		close(ch)
+		return ch, func() {}
+	}
+	m.subscribers[ch] = struct{}{}
+	m.subscribersMtx.Unlock()
+
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			m.subscribersMtx.Lock()
+			delete(m.subscribers, ch)
+			m.subscribersMtx.Unlock()
+		})
+	}
+	return ch, unsubscribe
+}
+
+// Events is a compatibility helper returning a subscribed channel.
+// Prefer Subscribe when the caller can explicitly unsubscribe.
+func (m *Manager) Events() <-chan Event {
+	ch, _ := m.Subscribe()
+	return ch
+}
 
 // Close releases internal resources.
 func (m *Manager) Close() {
-	close(m.events)
+	m.subscribersMtx.Lock()
+	m.closed = true
+	m.subscribers = map[chan Event]struct{}{}
+	m.subscribersMtx.Unlock()
 }
 
 func (m *Manager) publish(e Event) {
-	select {
-	case m.events <- e:
-	default:
-		// drop on backpressure rather than block; UI will refresh on next event
+	m.subscribersMtx.RLock()
+	if m.closed || len(m.subscribers) == 0 {
+		m.subscribersMtx.RUnlock()
+		return
+	}
+	subs := make([]chan Event, 0, len(m.subscribers))
+	for ch := range m.subscribers {
+		subs = append(subs, ch)
+	}
+	m.subscribersMtx.RUnlock()
+
+	for _, ch := range subs {
+		select {
+		case ch <- e:
+		default:
+			// drop on backpressure rather than block; UI will refresh on next event
+		}
 	}
 }

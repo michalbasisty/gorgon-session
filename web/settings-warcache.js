@@ -16,6 +16,7 @@ async function renderSettingsView() {
   $('#settings-loot-regex').value = cfg.loot_regex || '';
   $('#settings-sell-value-threshold').value = cfg.sell_value_threshold || 50;
   $('#settings-notification-threshold').value = cfg.notification_threshold || 500;
+  $('#settings-backup-enabled').checked = cfg.backup_enabled !== false;
   
   // Load player prices from server config
   state.playerPrices = cfg.player_prices || {};
@@ -36,13 +37,16 @@ $('#settings-form').addEventListener('submit', async (e) => {
   const sell_value_threshold = parseFloat($('#settings-sell-value-threshold').value) || 0;
   const notification_threshold = parseFloat($('#settings-notification-threshold').value) || 500;
 
+  const backup_enabled = $('#settings-backup-enabled').checked;
+
   const res = await api('/api/config', 'POST', {
     chat_log_dir,
     player_log_path,
     loot_regex,
     sell_value_threshold,
     player_prices: state.playerPrices,
-    notification_threshold
+    notification_threshold,
+    backup_enabled
   });
 
   if (res && res.ok) {
@@ -404,9 +408,7 @@ $('#warcache-use-suggestion')?.addEventListener('click', () => {
 });
 
 // Game overlay buttons
-$('#open-overlay')?.addEventListener('click', () => {
-  window.open('/overlay', 'gorgon-overlay', 'width=500,height=600,menubar=no,toolbar=no,resizable=yes');
-});
+$('#open-overlay')?.addEventListener('click', () => { openOverlay(); });
 
 $('#copy-overlay-url')?.addEventListener('click', () => {
   const url = window.location.origin + '/overlay';

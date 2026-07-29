@@ -1,12 +1,15 @@
 async function renderHistory() {
   const container = $('#history-list');
-  container.innerHTML = '<div class="summary-empty">Loading sessions...</div>';
+  if (!container) return;
+  try {
+    container.innerHTML = '<div class="summary-empty">Loading sessions...</div>';
 
-  const sessions = await api('/api/sessions');
-  if (!sessions) {
-    container.innerHTML = '<div class="summary-empty">Failed to load sessions</div>';
-    return;
-  }
+    const sessionsResp = await api('/api/sessions');
+    if (!sessionsResp) {
+      container.innerHTML = '<div class="summary-empty">Failed to load sessions</div>';
+      return;
+    }
+    const sessions = Array.isArray(sessionsResp) ? sessionsResp : [];
 
   if (sessions.length === 0) {
     container.innerHTML = '<div class="summary-empty">No sessions yet. Start a session to see history.</div>';
@@ -16,7 +19,7 @@ async function renderHistory() {
   }
 
   const totalSessions = sessions.length;
-  const totalValue = sessions.reduce((sum, s) => sum + s.total_value, 0);
+  const totalValue = sessions.reduce((sum, s) => sum + (Number(s.total_value) || 0), 0);
   $('#history-total-sessions').textContent = `${totalSessions} session${totalSessions !== 1 ? 's' : ''}`;
   $('#history-total-value').textContent = `${totalValue.toFixed(0)}g total`;
 
@@ -64,7 +67,7 @@ async function renderHistory() {
           </div>
           <div class="history-stat">
             <div class="history-stat-label">Value</div>
-            <div class="history-stat-value value">${session.total_value.toFixed(0)}g</div>
+            <div class="history-stat-value value">${(Number(session.total_value) || 0).toFixed(0)}g</div>
           </div>
           <div class="history-stat">
             <div class="history-stat-label">Favor</div>
@@ -82,17 +85,21 @@ async function renderHistory() {
     container.appendChild(card);
   }
 
-  // Track bulk selections
-  if (bulkMode) {
-    container.querySelectorAll('.bulk-cb').forEach(cb => {
-      cb.addEventListener('change', () => {
-        if (!state._selectedSessions) state._selectedSessions = new Set();
-        const id = cb.dataset.id;
-        if (cb.checked) state._selectedSessions.add(id);
-        else state._selectedSessions.delete(id);
-        updateBulkActions();
+    // Track bulk selections
+    if (bulkMode) {
+      container.querySelectorAll('.bulk-cb').forEach(cb => {
+        cb.addEventListener('change', () => {
+          if (!state._selectedSessions) state._selectedSessions = new Set();
+          const id = cb.dataset.id;
+          if (cb.checked) state._selectedSessions.add(id);
+          else state._selectedSessions.delete(id);
+          updateBulkActions();
+        });
       });
-    });
+    }
+  } catch (e) {
+    console.error('renderHistory failed', e);
+    container.innerHTML = `<div class="summary-empty">History render error: ${escapeHtml(e?.message || String(e))}</div>`;
   }
 }
 
@@ -159,7 +166,7 @@ function renderHistoryDetail(snapshot) {
   $('#history-detail-favor').textContent = favorItems;
   $('#history-detail-sell').textContent = sellItems;
 
-  // New event stats
+  // Update event stat cards
   const deaths = (snapshot.deaths || []).length;
   const gold = snapshot.total_gold || 0;
   const kills = (snapshot.kills || []).length;
@@ -167,28 +174,13 @@ function renderHistoryDetail(snapshot) {
   const lvlCount = (snapshot.level_ups || []).length;
   const gatherCount = (snapshot.gathering || []).length;
 
-  // Add event stat cards after the existing stat cards row
-  let extraCards = $('#hd-event-stats');
-  if (!extraCards) {
-    const row = $('#history-detail-items').closest('.history-detail-stats') || document.querySelector('.history-detail-stats');
-    if (row) {
-      extraCards = document.createElement('div');
-      extraCards.id = 'hd-event-stats';
-      extraCards.className = 'history-detail-stats';
-      extraCards.style.marginTop = '8px';
-      row.after(extraCards);
-    }
-  }
-  if (extraCards) {
-    extraCards.innerHTML = `
-      <div class="stat-card"><div class="stat-label">Deaths</div><div class="stat-value">${deaths}</div></div>
-      <div class="stat-card"><div class="stat-label">Kills</div><div class="stat-value">${kills}</div></div>
-      <div class="stat-card"><div class="stat-label">Gold Found</div><div class="stat-value">${gold}g</div></div>
-      <div class="stat-card"><div class="stat-label">XP Gains</div><div class="stat-value">${xpCount}</div></div>
-      <div class="stat-card"><div class="stat-label">Level Ups</div><div class="stat-value">${lvlCount}</div></div>
-      <div class="stat-card"><div class="stat-label">Gathered</div><div class="stat-value">${gatherCount}</div></div>
-    `;
-  }
+  const setText = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  setText('#hd-stat-deaths', deaths);
+  setText('#hd-stat-kills', kills);
+  setText('#hd-stat-gold', gold + 'g');
+  setText('#hd-stat-xp', xpCount);
+  setText('#hd-stat-levels', lvlCount);
+  setText('#hd-stat-gather', gatherCount);
 
   // Render tabs
   renderHistorySummary(loot);
@@ -226,113 +218,17 @@ function renderHistorySummary(loot) {
 }
 
 function renderHdFavorList(items) {
-  const container = $('#hd-favor-list');
-  container.innerHTML = '';
-  if (!items.length) { container.innerHTML = '<div class="summary-empty">no favor items</div>'; return; }
-
-  const byNPC = new Map();
-  for (const e of items) {
-    const targets = (e.decision.favor_targets || []).filter(t => !state.disabledNPCs.has(t.npc));
-    if (!targets.length) {
-      if (!byNPC.has('Disabled/Unknown')) byNPC.set('Disabled/Unknown', []);
-      byNPC.get('Disabled/Unknown').push(e);
-      continue;
-    }
-    const primary = targets[0];
-    const key = `${primary.npc} (${primary.area})`;
-    if (!byNPC.has(key)) byNPC.set(key, []);
-    byNPC.get(key).push(e);
-  }
-
-  const sorted = [...byNPC.entries()].sort((a, b) => {
-    const aPri = state.prioritizedNPCs.has(a[0].split(' (')[0]) ? 0 : 1;
-    const bPri = state.prioritizedNPCs.has(b[0].split(' (')[0]) ? 0 : 1;
-    if (aPri !== bPri) return aPri - bPri;
-    const aFav = a[1].reduce((s, e) => { const t = (e.decision.favor_targets || []).filter(x => !state.disabledNPCs.has(x.npc)); return s + (t.length > 0 ? t[0].score : 0) * e.count; }, 0);
-    const bFav = b[1].reduce((s, e) => { const t = (e.decision.favor_targets || []).filter(x => !state.disabledNPCs.has(x.npc)); return s + (t.length > 0 ? t[0].score : 0) * e.count; }, 0);
-    return bFav - aFav;
-  });
-
-  for (const [npc, entries] of sorted) {
-    const group = document.createElement('div');
-    group.className = 'summary-group';
-    const totalFavor = entries.reduce((sum, e) => {
-      const targets = (e.decision.favor_targets || []).filter(t => !state.disabledNPCs.has(t.npc));
-      return sum + (targets.length > 0 ? targets[0].score : 0) * e.count;
-    }, 0);
-    const npcName = npc.split(' (')[0];
-    const cap = state.traderCapacity[npcName];
-    const broke = cap && cap.remaining <= 0 && cap.limit > 0;
-
-    group.innerHTML = `<div class="summary-group-header npc">
-      ${escapeHtml(npc)} <span style="float:right;color:var(--muted);font-weight:normal">${entries.length} items · ${totalFavor.toFixed(1)} favor${broke ? ' · <span style="color:#e74c3c">⚠ no gold left</span>' : ''}</span>
-    </div>`;
-    for (const e of entries) {
-      const targets = (e.decision.favor_targets || []).filter(t => !state.disabledNPCs.has(t.npc));
-      const score = targets.length > 0 ? targets[0].score : 0;
-      const item = document.createElement('div');
-      item.className = 'summary-item';
-      item.innerHTML = `<span class="summary-item-name">${escapeHtml(e.name)}</span><span class="summary-item-count">x${e.count}</span><span class="summary-item-value">+${score.toFixed(1)} favor</span>`;
-      group.appendChild(item);
-    }
-    container.appendChild(group);
-  }
+  sharedRenderFavorList($('#hd-favor-list'), items);
+  // history detail doesn't need the prioritize button; strip it
+  $('#hd-favor-list')?.querySelectorAll('.pri-btn').forEach(b => b.remove());
 }
 
 function renderHdSellList(items) {
-  const container = $('#hd-sell-list');
-  container.innerHTML = '';
-  if (!items.length) { container.innerHTML = '<div class="summary-empty">no sell items</div>'; return; }
-
-  const vendors = items.filter(e => e.decision.verdict === 'sell_vendor');
-  const consignment = items.filter(e => e.decision.verdict === 'sell_consignment');
-
-  if (vendors.length) {
-    const group = document.createElement('div');
-    group.className = 'summary-group';
-    const totalValue = vendors.reduce((sum, e) => sum + (e.value || 0) * e.count, 0);
-    group.innerHTML = `<div class="summary-group-header vendor">any vendor <span style="float:right;color:var(--muted);font-weight:normal">${vendors.length} items · ${totalValue.toFixed(0)}g</span></div>`;
-    for (const e of vendors) {
-      const item = document.createElement('div');
-      item.className = 'summary-item';
-      item.innerHTML = `<span class="summary-item-name">${escapeHtml(e.name)}</span><span class="summary-item-count">x${e.count}</span><span class="summary-item-value">${(e.value || 0).toFixed(0)}g</span>`;
-      group.appendChild(item);
-    }
-    container.appendChild(group);
-  }
-
-  if (consignment.length) {
-    const group = document.createElement('div');
-    group.className = 'summary-group';
-    const totalValue = consignment.reduce((sum, e) => sum + (e.value || 0) * e.count, 0);
-    group.innerHTML = `<div class="summary-group-header consignment">consignment NPC <span style="float:right;color:var(--muted);font-weight:normal">${consignment.length} items · ${totalValue.toFixed(0)}g</span></div>`;
-    for (const e of consignment) {
-      const item = document.createElement('div');
-      item.className = 'summary-item';
-      const reason = e.decision.sell_reason ? `<br><span style="color:var(--muted);font-size:11px">${escapeHtml(e.decision.sell_reason)}</span>` : '';
-      item.innerHTML = `<span class="summary-item-name">${escapeHtml(e.name)}${reason}</span><span class="summary-item-count">x${e.count}</span><span class="summary-item-value">${(e.value || 0).toFixed(0)}g</span>`;
-      group.appendChild(item);
-    }
-    container.appendChild(group);
-  }
+  sharedRenderSellList($('#hd-sell-list'), items, true);
 }
 
 function renderHdKeepList(items) {
-  const container = $('#hd-keep-list');
-  container.innerHTML = '';
-  if (!items.length) { container.innerHTML = '<div class="summary-empty">no keep items</div>'; return; }
-
-  const totalValue = items.reduce((sum, e) => sum + (e.value || 0) * e.count, 0);
-  const group = document.createElement('div');
-  group.className = 'summary-group';
-  group.innerHTML = `<div class="summary-group-header" style="color:var(--keep)">manual decision <span style="float:right;color:var(--muted);font-weight:normal">${items.length} items · ${totalValue.toFixed(0)}g</span></div>`;
-  for (const e of items) {
-    const item = document.createElement('div');
-    item.className = 'summary-item';
-    item.innerHTML = `<span class="summary-item-name">${escapeHtml(e.name)}</span><span class="summary-item-count">x${e.count}</span><span class="summary-item-value">${(e.value || 0).toFixed(0)}g</span>`;
-    group.appendChild(item);
-  }
-  container.appendChild(group);
+  sharedRenderKeepList($('#hd-keep-list'), items);
 }
 
 function activateHdTab(tab) {
@@ -461,7 +357,9 @@ function renderHistoryEvents(snapshot) {
     for (const g of xp) { bySkill[g.skill] = (bySkill[g.skill] || 0) + g.amount; }
     let html = '<div class="summary-group"><div class="summary-group-header npc">XP Gains</div>';
     for (const [skill, amt] of Object.entries(bySkill).sort((a, b) => b[1] - a[1])) {
-      html += `<div class="summary-item"><span class="summary-item-name">${escapeHtml(skill)}</span><span class="summary-item-value">+${amt} XP</span></div>`;
+      const cat = skillCategory(skill);
+      const catHtml = cat ? ` <span class="muted">${escapeHtml(cat)}</span>` : '';
+      html += `<div class="summary-item"><span class="summary-item-name">${escapeHtml(skill)}${catHtml}</span><span class="summary-item-value">+${amt} XP</span></div>`;
     }
     html += '</div>';
     parts.push(html);
@@ -529,4 +427,70 @@ function renderHistoryEvents(snapshot) {
   }
 
   container.innerHTML = parts.length ? parts.join('') : '<div class="summary-empty">No events recorded for this session</div>';
+}
+
+function renderHistoryTimeline(snapshot) {
+  const container = $('#hd-timeline-content');
+  if (!container) return;
+  const events = [];
+
+  // Loot
+  for (const l of (snapshot.loot || [])) {
+    const t = l.last_seen || snapshot.started_at;
+    events.push({ time: new Date(t), type: 'loot', label: `🏆 ${escapeHtml(l.name)} x${l.count}`, detail: `${(l.valor || 0).toFixed(0)}g` });
+  }
+
+  // XP
+  for (const x of (snapshot.xp_gains || [])) {
+    const cat = skillCategory(x.skill);
+    const catLabel = cat ? ` (${cat})` : '';
+    events.push({ time: new Date(x.time), type: 'xp', label: `📈 ${escapeHtml(x.skill)}${catLabel}`, detail: `+${x.amount} XP` });
+  }
+
+  // Deaths
+  for (const d of (snapshot.deaths || [])) {
+    events.push({ time: new Date(d.time), type: 'death', label: '💀 Died', detail: '' });
+  }
+
+  // Kills
+  for (const k of (snapshot.kills || [])) {
+    events.push({ time: new Date(k.time), type: 'kill', label: `⚔ Killed ${escapeHtml(k.mob)}`, detail: '' });
+  }
+
+  // Gathering
+  for (const g of (snapshot.gathering || [])) {
+    events.push({ time: new Date(g.time), type: 'gather', label: `🪓 Gathered ${escapeHtml(g.item)}`, detail: `x${g.count}` });
+  }
+
+  // Level ups
+  for (const l of (snapshot.level_ups || [])) {
+    events.push({ time: new Date(l.time), type: 'level', label: `⬆ ${escapeHtml(l.skill)}`, detail: `Level ${l.level}` });
+  }
+
+  // Zone changes
+  for (const z of (snapshot.zone_history || [])) {
+    events.push({ time: new Date(z.time), type: 'zone', label: `📍 ${escapeHtml(zonePath(z.zone))}`, detail: '' });
+  }
+
+  if (events.length === 0) {
+    container.innerHTML = '<div class="summary-empty">No events recorded for this session</div>';
+    return;
+  }
+
+  events.sort((a, b) => a.time - b.time);
+
+  const typeColors = { loot: '#f1c40f', xp: '#2ecc71', death: '#e74c3c', kill: '#e67e22', gather: '#1abc9c', level: '#9b59b6', zone: '#3498db' };
+
+  let html = '<div class="timeline">';
+  for (const ev of events) {
+    const color = typeColors[ev.type] || '#7a7f8a';
+    const t = ev.time.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' });
+    html += `<div class="timeline-item" style="border-left-color:${color}">
+      <span class="timeline-time">${t}</span>
+      <span class="timeline-label">${ev.label}</span>
+      ${ev.detail ? `<span class="timeline-detail">${ev.detail}</span>` : ''}
+    </div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
 }

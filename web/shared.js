@@ -26,8 +26,14 @@ const state = {
   showHiddenOnly: false,
   prioritizedNPCs: new Set(),
   notificationThreshold: 500,
-  priceHistory: {} // item name → { average, last, count }
+  priceHistory: {}, // item name → { average, last, count }
+  combatData: null,
+  zoneNpcs: [],
+  dropRates: null
 };
+
+// Shared request state (must be initialized before any startup API calls)
+var __inflightGet = new Map();
 const tbody = $('#loot tbody');
 const stateEl = $('#state');
 const countEl = $('#count');
@@ -79,20 +85,32 @@ function saveSettings() {
 loadSettings();
 
 async function loadTraderCapacity() {
-  const areas = await api('/api/traders');
-  if (!areas) return;
-  const cap = {};
-  for (const area of areas) {
-    for (const npc of area.npcs) {
-      cap[npc.npc_name] = {
-        limit: npc.weekly_limit || 0,
-        sold: npc.sold_this_week || 0,
-        remaining: Math.max(0, (npc.weekly_limit || 0) - (npc.sold_this_week || 0)),
-        reset: npc.time_until_reset || ''
-      };
+  try {
+    const areasResp = await api('/api/traders');
+    const areas = Array.isArray(areasResp) ? areasResp : [];
+    const cap = {};
+    for (const area of areas) {
+      const npcs = Array.isArray(area?.npcs) ? area.npcs : [];
+      for (const npc of npcs) {
+        const dur = npc.time_until_reset || '';
+        const dMatch = dur.match(/(\d+)d/);
+        const hMatch = dur.match(/(\d+)h/);
+        const days = dMatch ? parseInt(dMatch[1]) : 99;
+        cap[npc.npc_name] = {
+          limit: npc.weekly_limit || 0,
+          sold: npc.sold_this_week || 0,
+          remaining: Math.max(0, (npc.weekly_limit || 0) - (npc.sold_this_week || 0)),
+          reset: dur,
+          daysUntilReset: days,
+          area: area.area || ''
+        };
+      }
     }
+    state.traderCapacity = cap;
+    if (state.currentView === 'dashboard') renderDashboard();
+  } catch (e) {
+    console.error('loadTraderCapacity failed', e);
   }
-  state.traderCapacity = cap;
 }
 loadTraderCapacity();
 
@@ -116,29 +134,76 @@ function fmtElapsed(ms) {
 
 // API helpers
 async function api(path, method = 'GET', body = null) {
-  const r = await fetch(path, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!r.ok) {
-    toast(`${path}: ${await r.text()}`, 'error');
-    return null;
+  const m = String(method || 'GET').toUpperCase();
+  const isGet = m === 'GET' && !body;
+  if (isGet && __inflightGet.has(path)) {
+    return __inflightGet.get(path);
   }
-  return r.json();
+
+  const p = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const r = await fetch(path, {
+        method: m,
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+      if (!r.ok) {
+        toast(`${path}: ${await r.text()}`, 'error');
+        return null;
+      }
+      return await r.json();
+    } catch (e) {
+      if (e && e.name === 'AbortError') {
+        console.warn('API timeout', path);
+        return null;
+      }
+      throw e;
+    } finally {
+      clearTimeout(timeout);
+    }
+  })();
+
+  if (isGet) {
+    __inflightGet.set(path, p);
+    p.finally(() => __inflightGet.delete(path));
+  }
+  return p;
 }
 
-// Navigation
+// Catch unhandled promise rejections so they don't silently break the page
+window.addEventListener('unhandledrejection', e => {
+  toast('Error: ' + (e.reason?.message || e.reason || 'unknown'), 'error');
+});
+
+// Navigation (click + keyboard)
 $$('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
     const view = item.dataset.view;
     switchView(view);
   });
+  item.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      switchView(item.dataset.view);
+    }
+  });
 });
+
+function updateNavAria(view) {
+  $$('.nav-item').forEach(n => {
+    const isActive = n.dataset.view === view;
+    n.classList.toggle('active', isActive);
+    n.setAttribute('aria-selected', String(isActive));
+    n.setAttribute('tabindex', isActive ? '0' : '-1');
+  });
+}
 
 function switchView(view) {
   state.currentView = view;
-  $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === view));
+  updateNavAria(view);
   $('#view-dashboard').classList.toggle('hidden', view !== 'dashboard');
   $('#view-tracker').classList.toggle('hidden', view !== 'tracker');
   $('#view-summary').classList.toggle('hidden', view !== 'summary');
@@ -149,6 +214,10 @@ function switchView(view) {
   $('#view-items').classList.toggle('hidden', view !== 'items');
   $('#view-warcache').classList.toggle('hidden', view !== 'warcache');
   $('#view-settings').classList.toggle('hidden', view !== 'settings');
+  $('#view-skills').classList.toggle('hidden', view !== 'skills');
+  $('#view-recipes').classList.toggle('hidden', view !== 'recipes');
+  $('#view-combat').classList.toggle('hidden', view !== 'combat');
+  $('#view-drop-rates').classList.toggle('hidden', view !== 'drop-rates');
 
   const titles = { 
     dashboard: 'Dashboard',
@@ -160,6 +229,10 @@ function switchView(view) {
     traders: 'Shops & Traders',
     items: 'Item Catalog',
     warcache: 'Warcache Solver',
+    skills: 'Skills Reference',
+    recipes: 'Recipe Browser',
+    combat: 'Combat Log',
+    'drop-rates': 'Drop Rates',
     settings: 'Settings'
   };
   $('#view-title').innerHTML = `${titles[view]} <small id="state">${state.session?.state || 'idle'}</small>`;
@@ -171,6 +244,10 @@ function switchView(view) {
   if (view === 'traders') { loadTraderCapacity().then(() => renderTradersView()); }
   if (view === 'items') renderItemsView();
   if (view === 'warcache') renderWarcacheView();
+  if (view === 'skills') renderSkillsView();
+  if (view === 'recipes') renderRecipesView();
+  if (view === 'combat') renderCombatView();
+  if (view === 'drop-rates') renderDropRatesView();
   if (view === 'settings') renderSettingsView();
 }
 
@@ -200,6 +277,9 @@ function renderSession(s) {
   renderLootTable(s);
   renderTrackerNotes(s);
   renderSessionEvents(s);
+  // Show start-notes input only when idle
+  const startNotes = $('#tracker-start-notes');
+  if (startNotes) startNotes.style.display = s.state === 'idle' ? '' : 'none';
 
   if (state.currentView === 'summary') {
     renderSummary(s);
@@ -229,58 +309,77 @@ window.editTrackerNotes = function() {
   $('#tracker-notes-input').focus();
 };
 
+function skillCategory(name) {
+  if (!state.skills) return '';
+  const key = Object.keys(state.skills).find(k => k.toLowerCase() === name.toLowerCase());
+  if (!key) return '';
+  const s = state.skills[key];
+  return s.Combat ? 'Combat' : 'Non-Combat';
+}
+
 function zonePath(zoneName) {
   if (!state.areas || !zoneName) return zoneName;
-  // Find area by lowercase name match
+  // Try to find the friendly name via reverse lookup
   const key = zoneName.toLowerCase();
-  let area = null;
-  for (const id of Object.keys(state.areas)) {
-    if (state.areas[id].name.toLowerCase() === key) { area = state.areas[id]; break; }
+  for (const internalKey of Object.keys(state.areas)) {
+    const friendly = state.areas[internalKey];
+    if (friendly.toLowerCase() === key) return friendly;
   }
-  if (!area) return zoneName;
-  // Build parent chain (Parent=0 means root)
-  let parts = [area.name];
-  let parentId = area.parent;
-  let guard = 0;
-  while (parentId && parentId > 0 && guard < 10) {
-    const p = state.areas[parentId];
-    if (!p) break;
-    parts.unshift(p.name);
-    parentId = p.parent;
-    guard++;
-  }
-  return parts.join(' › ');
+  // Check short friendly names if available via fallback
+  // If no match, return the raw name
+  return zoneName;
 }
 
 function renderSessionEvents(s) {
   const el = $('#tracker-events');
   if (!el) return;
-  if (s.state !== 'running') { el.innerHTML = ''; return; }
 
-  const parts = [];
-  if (s.zone) parts.push(`📍 ${escapeHtml(zonePath(s.zone))}`);
-  const xp = s.xp_gains || [];
-  if (xp.length) {
-    // Group by skill, sum amounts
-    const bySkill = {};
-    for (const g of xp) { bySkill[g.skill] = (bySkill[g.skill] || 0) + g.amount; }
-    const skills = Object.entries(bySkill).sort((a, b) => b[1] - a[1]).slice(0, 5);
-    parts.push(`XP: ${skills.map(([sk, am]) => `${sk}+${am}`).join(', ')}${skills.length < Object.keys(bySkill).length ? '…' : ''}`);
+  let html = '';
+
+  // Zone timeline — always shown (persists after session stops)
+  const zHist = s.zone_history || [];
+  if (zHist.length > 1) {
+    const recent = zHist.slice(-6);
+    html += `<div class="tracker-zone-timeline">📍 ${recent.map((z, i) => {
+      const name = zonePath(z.zone);
+      if (i === recent.length - 1) return `<strong>${escapeHtml(name)}</strong>`;
+      return `<span title="${relTime(z.time)}">${escapeHtml(name)}</span>`;
+    }).join(' <span class="tz-arrow">→</span> ')} <span class="tz-count">(${zHist.length} zones)</span></div>`;
+  } else if (zHist.length === 1) {
+    html += `<div class="tracker-zone-timeline">📍 <strong>${escapeHtml(zonePath(zHist[0].zone))}</strong> <span class="tz-count">(${relTime(zHist[0].time)})</span></div>`;
   }
-  const deaths = (s.deaths || []).length;
-  if (deaths) parts.push(`💀 ${deaths} death${deaths > 1 ? 's' : ''}`);
-  const kills = (s.kills || []).length;
-  if (kills) parts.push(`⚔ ${kills} kill${kills > 1 ? 's' : ''}`);
-  const gold = s.total_gold || 0;
-  if (gold) parts.push(`💰 ${gold}g`);
-  const gather = (s.gathering || []).length;
-  if (gather) parts.push(`🪓 ${gather} gather${gather > 1 ? 's' : ''}`);
-  const levels = (s.level_ups || []).length;
-  if (levels) parts.push(`⬆ ${levels} level${levels > 1 ? 's' : ''}`);
 
-  el.innerHTML = parts.length
-    ? `<div class="tracker-events-bar">${parts.join(' &middot; ')}</div>`
-    : '';
+  // Events bar — live session data
+  if (s.state === 'running') {
+    const parts = [];
+    if (s.zone) parts.push(`📍 ${escapeHtml(zonePath(s.zone))}`);
+    const xp = s.xp_gains || [];
+    if (xp.length) {
+      const bySkill = {};
+      for (const g of xp) { bySkill[g.skill] = (bySkill[g.skill] || 0) + g.amount; }
+      const skills = Object.entries(bySkill).sort((a, b) => b[1] - a[1]).slice(0, 5);
+      parts.push(`XP: ${skills.map(([sk, am]) => {
+        const cat = skillCategory(sk);
+        return cat ? `${sk}(${cat}) +${am}` : `${sk}+${am}`;
+      }).join(', ')}${skills.length < Object.keys(bySkill).length ? '…' : ''}`);
+    }
+    const deaths = (s.deaths || []).length;
+    if (deaths) parts.push(`💀 ${deaths} death${deaths > 1 ? 's' : ''}`);
+    const kills = (s.kills || []).length;
+    if (kills) parts.push(`⚔ ${kills} kill${kills > 1 ? 's' : ''}`);
+    const gold = s.total_gold || 0;
+    if (gold) parts.push(`💰 ${gold}g`);
+    const gather = (s.gathering || []).length;
+    if (gather) parts.push(`🪓 ${gather} gather${gather > 1 ? 's' : ''}`);
+    const levels = (s.level_ups || []).length;
+    if (levels) parts.push(`⬆ ${levels} level${levels > 1 ? 's' : ''}`);
+
+    if (parts.length) {
+      html = `<div class="tracker-events-bar">${parts.join(' &middot; ')}</div>` + html;
+    }
+  }
+
+  el.innerHTML = html;
 }
 
 window.saveTrackerNotes = async function() {
@@ -322,9 +421,33 @@ function addRow(e) {
     <td class="count">${e.count}</td>
     <td><span class="verdict ${e.decision.verdict}">${e.decision.verdict.replace(/_/g, ' ')}</span></td>
     <td class="route">${routeText(e.decision)}</td>
-    <td><button class="loot-del-btn" onclick="deleteLootItem('${escapeHtml(e.name).replace(/'/g, "\\'")}')">×</button></td>`;
+    <td><button class="loot-del-btn" onclick="deleteLootItem('${escapeHtml(e.name).replace(/'/g, "\\'")}')">×</button></td>
+    <td class="loot-note">
+      <span class="loot-note-text" ondblclick="editLootNote(this,'${escapeHtml(e.name).replace(/'/g, "\\'")}')">${escapeHtml(e.note || '') || '<span style="opacity:0.3;cursor:help" title="double-click to add note">—</span>'}</span>
+    </td>`;
   tbody.insertBefore(tr, tbody.firstChild);
 }
+
+window.editLootNote = function(span, name) {
+  const current = span.textContent === '—' ? '' : span.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'loot-note-input';
+  input.value = current;
+  input.placeholder = 'note...';
+  input.style.cssText = 'width:100%;font-size:13px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--accent);border-radius:3px;outline:none';
+  span.replaceWith(input);
+  input.focus();
+  input.onblur = async function() {
+    const note = input.value.trim();
+    await api('/api/loot-note', 'PATCH', { name, note });
+    refreshAll();
+  };
+  input.onkeydown = function(ev) {
+    if (ev.key === 'Enter') input.blur();
+    if (ev.key === 'Escape') { input.value = current; input.blur(); }
+  };
+};
 
 window.deleteLootItem = async function(name) {
   if (!confirm(`Remove "${name}" from this session?`)) return;
@@ -380,21 +503,224 @@ $('#stop').addEventListener('click', async () => {
   }
 });
 
-// SSE feed
-const es = new EventSource('/api/feed');
-es.onmessage = ev => {
-  const data = JSON.parse(ev.data);
-  refreshAll();
+// Skills view — XP per hour + NPC time tracker
+function renderSkillsView() {
+  const container = $('#skills-list');
+  if (!container) return;
+  const s = state.session;
+  const gains = s?.xp_gains;
+  if (!gains || gains.length === 0) {
+    container.innerHTML = '<div class="summary-empty">No XP data yet. Start a session and gain some XP.</div>';
+    return;
+  }
 
-  // Rare loot notification
-  if (data.kind === 'loot' && data.payload) {
-    const loot = data.payload;
-    if (loot.value >= state.notificationThreshold) {
-      showRareLootNotification(loot);
+  const start = new Date(s.started_at);
+  const end = s.state === 'running' ? new Date() : new Date(s.ended_at);
+  const elapsed = end - start;
+  const hours = elapsed / 3600000;
+  const mins = Math.floor(elapsed / 60000);
+
+  // Group and sum per skill
+  const bySkill = {};
+  for (const g of gains) {
+    bySkill[g.skill] = (bySkill[g.skill] || 0) + g.amount;
+  }
+
+  const entries = Object.entries(bySkill)
+    .map(([skill, total]) => ({ skill, total, perHour: hours > 0 ? total / hours : total }))
+    .sort((a, b) => b.perHour - a.perHour);
+
+  const maxPerHour = entries[0]?.perHour || 1;
+
+  const count = $('#skills-count');
+  if (count) count.textContent = `${entries.length} skill${entries.length !== 1 ? 's' : ''}`;
+
+  const elapsedStr = mins >= 60
+    ? `${Math.floor(mins / 60)}h ${mins % 60}m`
+    : `${mins}m`;
+
+  // Summary stats
+  const totalXP = entries.reduce((sum, e) => sum + e.total, 0);
+  const totalGold = (s.loot || []).reduce((sum, l) => sum + (l.value || 0) * (l.count || 0), 0);
+  const kills = (s.kills || []).length;
+  const deaths = (s.deaths || []).length;
+  const levels = s.level_ups || [];
+
+  const widgets = [
+    { label: 'Session', value: elapsedStr },
+    { label: 'Total XP', value: totalXP.toLocaleString() },
+    { label: 'XP /hr', value: Math.round(totalXP / hours).toLocaleString() },
+    { label: 'Gold', value: Math.round(totalGold).toLocaleString() },
+    { label: 'Kills', value: kills.toLocaleString() },
+    { label: 'Deaths', value: deaths.toLocaleString() },
+  ];
+  let html = `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">`;
+  for (const w of widgets) {
+    html += `<div style="flex:1;min-width:100px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">${w.label}</div>
+      <div style="font-size:18px;font-weight:700;color:var(--text);margin-top:2px">${escapeHtml(w.value)}</div>
+    </div>`;
+  }
+  html += `</div>`;
+
+  // Level-ups
+  if (levels.length > 0) {
+    html += `<div style="margin-bottom:12px;padding:10px 14px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Level Ups</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">`;
+    for (const lv of levels) {
+      html += `<span style="background:var(--bg);padding:3px 10px;border-radius:4px;font-size:13px;font-weight:600">${escapeHtml(lv.skill)} → ${lv.level}</span>`;
+    }
+    html += `</div></div>`;
+  }
+
+  // (dashboard widgets live on the Dashboard view, not here)
+
+  html += `<div style="margin-bottom:8px;font-size:12px;color:var(--muted)">XP per skill (sorted by rate)</div>`;
+  container.innerHTML = html;
+
+  for (const e of entries) {
+    const pct = e.perHour / maxPerHour;
+    const card = document.createElement('div');
+    card.className = 'history-card';
+    card.style.cssText = 'cursor:default;padding:12px';
+
+    card.innerHTML = `<div class="history-card-body">
+      <div class="history-card-header" style="margin-bottom:4px">
+        <div class="history-card-dungeon">${escapeHtml(e.skill)}</div>
+        <div class="history-card-date">${Math.round(e.perHour).toLocaleString()} /hr</div>
+      </div>
+      <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:8px">
+        <span style="font-size:22px;font-weight:700;color:var(--text)">+${e.total.toLocaleString()}</span>
+        <span style="font-size:12px;color:var(--muted)">XP total</span>
+      </div>
+      <div style="height:6px;background:var(--bg);border-radius:3px;overflow:hidden">
+        <div style="height:100%;width:${(pct * 100).toFixed(1)}%;background:var(--accent);border-radius:3px;transition:width .3s"></div>
+      </div>
+    </div>`;
+    container.appendChild(card);
+  }
+}
+
+// Recipes view
+function renderRecipesView() {
+  const container = $('#recipes-list');
+  if (!container) return;
+  const recipes = state.recipes;
+  if (!recipes) {
+    container.innerHTML = '<div class="summary-empty">Loading recipes...</div>';
+    return;
+  }
+
+  const search = ($('#recipes-search')?.value || '').toLowerCase();
+  const skillFilter = $('#recipes-skill-filter')?.value || '';
+
+  // Populate skill filter dropdown
+  const select = $('#recipes-skill-filter');
+  if (select && select.options.length <= 1) {
+    const skills = new Set();
+    for (const r of Object.values(recipes)) if (r.Skill) skills.add(r.Skill);
+    for (const s of [...skills].sort()) {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = s;
+      select.appendChild(opt);
     }
   }
-};
-es.onerror = () => { };
+
+  // Convert map to array for filtering
+  const allRecipes = Object.values(recipes);
+  const filtered = allRecipes.filter(r => {
+    if (search && !(r.Name || '').toLowerCase().includes(search) && !(r.Skill || '').toLowerCase().includes(search)) return false;
+    if (skillFilter && r.Skill !== skillFilter) return false;
+    return true;
+  });
+
+  const count = $('#recipes-count');
+  if (count) count.textContent = `${filtered.length} recipe${filtered.length !== 1 ? 's' : ''} (${allRecipes.length} total)`;
+
+  container.innerHTML = '';
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="summary-empty">No recipes match your filters</div>';
+    return;
+  }
+
+  for (const r of filtered.slice(0, 200)) {
+    const card = document.createElement('div');
+    card.className = 'history-card';
+    card.style.cursor = 'default';
+
+    const mats = (r.Ingredients || []).map(m => {
+      const name = state.itemNames?.[m.ItemCode] || `#${m.ItemCode}`;
+      return `${escapeHtml(name)} x${m.StackSize}`;
+    }).join(', ') || 'none';
+
+    const results = (r.ResultItems || []).map(ri => {
+      const name = state.itemNames?.[ri.ItemCode] || `#${ri.ItemCode}`;
+      return `${escapeHtml(name)} x${ri.StackSize}`;
+    }).join(', ');
+
+    card.innerHTML = `<div class="history-card-body">
+      <div class="history-card-header">
+        <div class="history-card-dungeon">${escapeHtml(r.Name || 'Unnamed')}</div>
+        <div class="history-card-date">${escapeHtml(r.Skill || '')} · Lv ${r.SkillLevelReq ?? '?'}</div>
+      </div>
+      ${r.Description ? `<div class="history-card-notes" style="margin-top:4px">${escapeHtml(r.Description)}</div>` : ''}
+      <div class="history-card-stats" style="flex-wrap:wrap">
+        <div class="history-stat"><div class="history-stat-label">Materials</div><div class="history-stat-value" style="font-size:12px">${mats}</div></div>
+        ${results ? `<div class="history-stat"><div class="history-stat-label">Result</div><div class="history-stat-value" style="font-size:12px">${results}</div></div>` : ''}
+      </div>
+    </div>`;
+    container.appendChild(card);
+  }
+  if (filtered.length > 200) {
+    const more = document.createElement('div');
+    more.className = 'summary-empty';
+    more.textContent = `+ ${filtered.length - 200} more recipes (narrow your search)`;
+    container.appendChild(more);
+  }
+}
+
+$('#recipes-search')?.addEventListener('input', () => {
+  if (state.currentView === 'recipes') renderRecipesView();
+});
+$('#recipes-skill-filter')?.addEventListener('change', () => {
+  if (state.currentView === 'recipes') renderRecipesView();
+});
+
+// Poll feed replacement (avoids per-tab EventSource connection limits)
+let __lastLootSig = '';
+let __pollInFlight = false;
+async function pollUpdates() {
+  if (__pollInFlight) return;
+  __pollInFlight = true;
+  try {
+    const s = await api('/api/session');
+    if (!s) return;
+
+    // Rare loot notification on change in most recent loot entry
+    const loot = Array.isArray(s.loot) && s.loot.length ? s.loot[s.loot.length - 1] : null;
+    if (loot) {
+      const sig = `${loot.name}|${loot.count}|${loot.last_seen || ''}`;
+      if (__lastLootSig && sig !== __lastLootSig) {
+        const lootValue = Number(loot.value ?? loot.valor ?? 0);
+        if (lootValue >= state.notificationThreshold) {
+          showRareLootNotification(loot);
+        }
+      }
+      __lastLootSig = sig;
+    }
+
+    renderSession(s);
+    const ph = await api('/api/prices');
+    if (ph) state.priceHistory = ph;
+  } catch (e) {
+    // keep silent; api() already toasts for hard failures
+  } finally {
+    __pollInFlight = false;
+  }
+}
+setInterval(pollUpdates, 3000);
 
 function showRareLootNotification(loot) {
   if (!('Notification' in window)) return;
@@ -421,36 +747,44 @@ let itemsCache = null;
 async function renderItemsView() {
   const container = $('#items-list');
   if (!container) return;
-  const search = ($('#items-search')?.value || '').toLowerCase();
-  if (!itemsCache) {
-    container.innerHTML = '<div class="summary-empty">Loading items...</div>';
-    itemsCache = await api('/api/items');
-    if (!itemsCache) { container.innerHTML = '<div class="summary-empty">Failed to load items</div>'; return; }
-  }
+  try {
+    const search = ($('#items-search')?.value || '').toLowerCase();
+    if (!itemsCache) {
+      container.innerHTML = '<div class="summary-empty">Loading items...</div>';
+      const itemsResp = await api('/api/items');
+      if (!itemsResp) { container.innerHTML = '<div class="summary-empty">Failed to load items</div>'; return; }
+      itemsCache = Array.isArray(itemsResp) ? itemsResp : [];
+    }
 
-  const filtered = search ? itemsCache.filter(i => (i.Name || '').toLowerCase().includes(search) || (i.Keywords || []).some(k => k.toLowerCase().includes(search))) : itemsCache;
-  $('#items-count').textContent = `${filtered.length} item${filtered.length !== 1 ? 's' : ''} (${itemsCache.length} total)`;
+    const filtered = search
+      ? itemsCache.filter(i => (i.Name || '').toLowerCase().includes(search) || (Array.isArray(i.Keywords) ? i.Keywords : []).some(k => String(k).toLowerCase().includes(search)))
+      : itemsCache;
+    $('#items-count').textContent = `${filtered.length} item${filtered.length !== 1 ? 's' : ''} (${itemsCache.length} total)`;
 
-  container.innerHTML = '';
-  if (filtered.length === 0) {
-    container.innerHTML = '<div class="summary-empty">No items match your search</div>';
-    return;
-  }
+    container.innerHTML = '';
+    if (filtered.length === 0) {
+      container.innerHTML = '<div class="summary-empty">No items match your search</div>';
+      return;
+    }
 
-  for (const item of filtered.slice(0, 500)) {
-    const card = document.createElement('div');
-    card.className = 'item-card';
-    card.innerHTML = `<div class="item-card-name">${escapeHtml(item.Name || 'Unknown')}</div>
-      <div class="item-card-id">#${item.ItemID || '?'}</div>
-      <div class="item-card-value">${item.Value || 0}g</div>
-      ${item.Keywords?.length ? `<div class="item-card-keywords">${item.Keywords.slice(0, 3).map(k => '<span class="item-tag">' + escapeHtml(k) + '</span>').join(' ')}</div>` : ''}`;
-    container.appendChild(card);
-  }
-  if (filtered.length > 500) {
-    const more = document.createElement('div');
-    more.className = 'summary-empty';
-    more.textContent = `+ ${filtered.length - 500} more items (narrow your search)`;
-    container.appendChild(more);
+    for (const item of filtered.slice(0, 500)) {
+      const card = document.createElement('div');
+      card.className = 'item-card';
+      card.innerHTML = `<div class="item-card-name">${escapeHtml(item.Name || 'Unknown')}</div>
+        <div class="item-card-id">#${item.ItemID || '?'}</div>
+        <div class="item-card-value">${item.Value || 0}g</div>
+        ${item.Keywords?.length ? `<div class="item-card-keywords">${item.Keywords.slice(0, 3).map(k => '<span class="item-tag">' + escapeHtml(k) + '</span>').join(' ')}</div>` : ''}`;
+      container.appendChild(card);
+    }
+    if (filtered.length > 500) {
+      const more = document.createElement('div');
+      more.className = 'summary-empty';
+      more.textContent = `+ ${filtered.length - 500} more items (narrow your search)`;
+      container.appendChild(more);
+    }
+  } catch (e) {
+    console.error('renderItemsView failed', e);
+    container.innerHTML = `<div class="summary-empty">Items render error: ${escapeHtml(e?.message || String(e))}</div>`;
   }
 }
 
@@ -474,11 +808,23 @@ function defaultDashLayout() {
     { type: 'recent-sessions', title: 'Recent Sessions', size: 'half', visible: true },
     { type: 'value-chart', title: 'Value Trend', size: 'half', visible: true },
     { type: 'favor-chart', title: 'Favor Trend', size: 'half', visible: true },
+    { type: 'reset-alerts', title: '⏳ Nearing Reset', size: 'half', visible: true },
+    { type: 'combat-stats', title: '⚔ Combat', size: 'half', visible: true },
   ];
 }
 function loadDashLayout() {
-  try { return JSON.parse(localStorage.getItem('dashLayout') || 'null') || defaultDashLayout(); }
-  catch { return defaultDashLayout(); }
+  let layout;
+  try { layout = JSON.parse(localStorage.getItem('dashLayout') || 'null'); } catch { layout = null; }
+  if (!layout) return defaultDashLayout();
+  // Merge in any new default widgets that aren't in the saved layout
+  const existing = new Set(layout.map(w => w.type));
+  for (const def of defaultDashLayout()) {
+    if (!existing.has(def.type)) {
+      layout.push(def);
+      existing.add(def.type);
+    }
+  }
+  return layout;
 }
 function saveDashLayout() { localStorage.setItem('dashLayout', JSON.stringify(state.dashLayout)); }
 
@@ -544,6 +890,26 @@ widgetRenderers['favor-chart'] = function(w, sessions) {
   return `<canvas id="favor-chart" height="160" style="width:100%;border-radius:var(--radius);background:var(--row);border:1px solid var(--border);box-shadow:var(--shadow)"></canvas>`;
 };
 
+widgetRenderers['reset-alerts'] = function(w, sessions) {
+  const caps = state.traderCapacity || {};
+  const sorted = Object.entries(caps)
+    .sort((a, b) => a[1].daysUntilReset - b[1].daysUntilReset)
+    .slice(0, 10);
+  if (sorted.length === 0) return '<div class="dash-info-box"><span class="muted">No trader data</span></div>';
+  let html = '<div class="dash-recent-list">';
+  for (const [name, cap] of sorted) {
+    const hasCap = cap.limit > 0;
+    const color = cap.daysUntilReset <= 1 ? 'var(--danger)' : cap.daysUntilReset <= 3 ? 'var(--sell-vendor)' : 'var(--muted)';
+    html += `<div class="dash-recent-item" style="cursor:default">
+      <div><div class="dash-item-dungeon">${escapeHtml(name)}</div>
+      <div class="dash-item-meta">${escapeHtml(cap.area)}</div></div>
+      <div class="dash-item-value" style="color:${color}">${escapeHtml(cap.reset)}${hasCap ? ' · ' + Math.round(cap.remaining).toLocaleString() + 'g' : ''}</div>
+    </div>`;
+  }
+  html += '</div>';
+  return html;
+};
+
 widgetRenderers['trader-alerts'] = function(w, sessions) {
   const caps = state.traderCapacity || {};
   const alerts = Object.entries(caps)
@@ -562,6 +928,29 @@ widgetRenderers['trader-alerts'] = function(w, sessions) {
   return html;
 };
 
+widgetRenderers['combat-stats'] = async function(w, sessions) {
+  const s = state.session;
+  if (!s || s.state !== 'running') return '<div class="dash-info-box"><span class="muted">Session must be running</span></div>';
+  try {
+    const data = await api('/api/combat');
+    if (!data || data.length === 0) return '<div class="dash-info-box"><span class="muted">No combat data yet</span></div>';
+    const totalDPS = data.reduce((a, b) => a + (b.est_dps || 0), 0);
+    const totalUses = data.reduce((a, b) => a + b.uses, 0);
+    const totalHits = data.reduce((a, b) => a + (b.hits || 0), 0);
+    const topAbils = data.sort((a, b) => (b.est_dps || 0) - (a.est_dps || 0)).slice(0, 5);
+    let html = `<div class="dashboard-stats" style="margin-bottom:8px">
+      <div class="stat-card"><div class="stat-label">Est. DPS</div><div class="stat-value">${totalDPS.toFixed(1)}</div></div>
+      <div class="stat-card"><div class="stat-label">Abilities</div><div class="stat-value">${totalUses}</div></div>
+      <div class="stat-card"><div class="stat-label">Hits</div><div class="stat-value">${totalHits}</div></div>
+    </div><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Top by DPS</div>`;
+    for (const a of topAbils) {
+      html += `<div style="display:flex;justify-content:space-between;padding:3px 8px;font-size:12px;border-bottom:1px solid var(--border)">
+        <span>${escapeHtml(a.name)}</span><span style="color:var(--accent)">${(a.est_dps || 0).toFixed(1)} dps</span></div>`;
+    }
+    return html;
+  } catch { return '<div class="dash-info-box"><span class="muted">Combat data unavailable</span></div>'; }
+};
+
 widgetRenderers['top-items'] = function(w, sessions) {
   const top = [...sessions].sort((a, b) => b.total_value - a.total_value).slice(0, 5);
   if (top.length === 0) return '<div class="dash-info-box"><span class="muted">No data yet</span></div>';
@@ -578,6 +967,7 @@ widgetRenderers['top-items'] = function(w, sessions) {
   html += '</div>';
   return html;
 };
+
 
 async function renderDashboard() {
   const sessions = await api('/api/sessions');
@@ -604,7 +994,15 @@ async function renderDashboard() {
     container.appendChild(el);
 
     const body = el.querySelector('.dash-widget-body');
-    body.innerHTML = fn(widget, sessions);
+    try {
+      const result = fn(widget, sessions);
+      if (result && typeof result.then === 'function') {
+        body.innerHTML = '<div class="summary-empty">Loading...</div>';
+        result.then(html => { body.innerHTML = html; }).catch(e => { body.innerHTML = `<div class="summary-empty" style="color:var(--error)">Error: ${e.message}</div>`; });
+      } else {
+        body.innerHTML = result;
+      }
+    } catch(e) { body.innerHTML = `<div class="summary-empty" style="color:var(--error)">Error: ${e.message}</div>`; }
 
     // After rendering, draw charts for canvas widgets
     if (widget.type === 'value-chart' || widget.type === 'favor-chart') {
@@ -744,6 +1142,112 @@ setInterval(() => {
   }
 }, 1000);
 
+// Combat view — ability usage + estimated DPS
+async function renderCombatView() {
+  const container = $('#combat-list');
+  if (!container) return;
+  const s = state.session;
+  if (!s || !s.ability_uses || s.ability_uses.length === 0) {
+    container.innerHTML = '<div class="summary-empty">Start a session and use abilities to see combat data here.</div>';
+    $('#combat-count').textContent = 'No combat data';
+    return;
+  }
+  const data = await api('/api/combat');
+  if (!data) { container.innerHTML = '<div class="summary-empty">Combat endpoint unavailable.</div>'; return; }
+  state.combatData = data;
+  $('#combat-count').textContent = `${data.length} ability type${data.length !== 1 ? 's' : ''}`;
+
+  // DPS stat cards
+  const totalDPS = data.reduce((s, a) => s + (a.est_dps || 0), 0);
+  const totalUses = data.reduce((s, a) => s + a.uses, 0);
+  const totalHits = data.reduce((s, a) => s + (a.hits || 0), 0);
+  const statsEl = $('#combat-stats');
+  if (statsEl) {
+    statsEl.innerHTML = `
+      <div style="flex:1;min-width:120px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Abilities Used</div>
+        <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:2px">${totalUses}</div>
+      </div>
+      <div style="flex:1;min-width:120px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Outgoing Hits</div>
+        <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:2px">${totalHits}</div>
+      </div>
+      <div style="flex:1;min-width:120px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Est. DPS</div>
+        <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:2px">${totalDPS.toFixed(1)}</div>
+      </div>`;
+  }
+
+  // Per-ability table
+  let html = '<table style="width:100%;border-collapse:collapse"><thead><tr>' +
+    '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">Ability</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Uses</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Hits</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Base DMG</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Est DPS</th>' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--border)">Type</th>' +
+    '</tr></thead><tbody>';
+  for (const a of data) {
+    html += `<tr>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${escapeHtml(a.name)}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${a.uses}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${a.hits || '-'}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${a.base_damage ? a.base_damage.toFixed(0) : '-'}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${a.est_dps ? a.est_dps.toFixed(1) : '-'}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${a.skill || a.damage_type ? escapeHtml(a.skill || '') + (a.damage_type ? ' · ' + escapeHtml(a.damage_type) : '') : ''}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// Zones view — show zone history from session snapshot
+// Drop Rates view — aggregated across sessions
+async function renderDropRatesView() {
+  const container = $('#drop-list');
+  if (!container) return;
+  container.innerHTML = '<div class="summary-empty">Loading drop rates...</div>';
+  const data = await api('/api/drop-rates');
+  if (!data || data.length === 0) {
+    container.innerHTML = '<div class="summary-empty">No session data yet. Complete sessions to see drop rates.</div>';
+    $('#drop-count').textContent = '0 items';
+    return;
+  }
+  state.dropRates = data;
+  const search = ($('#drop-search')?.value || '').toLowerCase();
+
+  const filtered = search ? data.filter(d => d.name.toLowerCase().includes(search)) : data;
+  filtered.sort((a, b) => b.total_count - a.total_count);
+  $('#drop-count').textContent = `${filtered.length} item${filtered.length !== 1 ? 's' : ''} (${data.length} unique)`;
+
+  let html = '<table style="width:100%;border-collapse:collapse"><thead><tr>' +
+    '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">Item</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Total</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Sessions</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Avg/Session</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Avg Value</th>' +
+    '</tr></thead><tbody>';
+  for (const d of filtered.slice(0, 500)) {
+    html += `<tr>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${escapeHtml(d.name)}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${d.total_count}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${d.session_count}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${d.avg_per_session.toFixed(1)}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${d.avg_value ? d.avg_value.toFixed(0) + 'g' : '-'}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  if (filtered.length > 500) {
+    html += `<div class="summary-empty">+ ${filtered.length - 500} more items (narrow your search)</div>`;
+  }
+  container.innerHTML = html;
+}
+
+// Drop search listener
+$('#drop-search')?.addEventListener('input', () => {
+  if (state.currentView === 'drop-rates') renderDropRatesView();
+});
+
 // NPC Settings functions
 async function loadNPCList() {
   const npcs = await api('/api/npcs');
@@ -778,6 +1282,15 @@ $('#manual-loot-add')?.addEventListener('click', async () => {
   }
 });
 
+// Open overlay in a lightweight popout window (no OBS/extensions needed)
+window.openOverlay = function() {
+  const w = 380, h = 600;
+  const left = screen.width - w - 20;
+  const top = 80;
+  window.open('/overlay', 'gorgon-overlay',
+    `width=${w},height=${h},left=${left},top=${top},toolbar=no,location=no,status=no,menubar=no,scrollbars=no,resizable=yes`);
+};
+
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
   if (e.ctrlKey && e.key === 'Enter') {
@@ -790,4 +1303,127 @@ document.addEventListener('keydown', e => {
     const search = state.currentView === 'tracker' ? $('#loot-search') : $('#favor-search');
     if (search) search.focus();
   }
+  if (e.key === 'o' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) {
+    e.preventDefault();
+    window.openOverlay();
+  }
+  if (e.key === 'r' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) {
+    e.preventDefault();
+    refreshAll();
+    toast('Refreshed', 'info');
+  }
 });
+
+// Refresh button
+$('#refresh-btn')?.addEventListener('click', () => { refreshAll(); toast('Refreshed', 'info'); });
+
+// ── Shared item list renderers (used by summary.js & history.js) ──
+
+window.sharedRenderFavorList = function(container, items) {
+  container.innerHTML = '';
+  if (!items.length) { container.innerHTML = '<div class="summary-empty">no favor items</div>'; return; }
+
+  const byNPC = new Map();
+  for (const e of items) {
+    const targets = (e.decision.favor_targets || []).filter(t => !state.disabledNPCs.has(t.npc));
+    if (!targets.length) {
+      if (!byNPC.has('Disabled/Unknown')) byNPC.set('Disabled/Unknown', []);
+      byNPC.get('Disabled/Unknown').push(e);
+      continue;
+    }
+    const primary = targets[0];
+    const key = `${primary.npc} (${primary.area})`;
+    if (!byNPC.has(key)) byNPC.set(key, []);
+    byNPC.get(key).push(e);
+  }
+
+  const sorted = [...byNPC.entries()].sort((a, b) => {
+    const aPri = state.prioritizedNPCs.has(a[0].split(' (')[0]) ? 0 : 1;
+    const bPri = state.prioritizedNPCs.has(b[0].split(' (')[0]) ? 0 : 1;
+    if (aPri !== bPri) return aPri - bPri;
+    return b[1].reduce((s, e) => s + ((e.decision.favor_targets||[]).filter(x=>!state.disabledNPCs.has(x.npc))[0]?.score||0) * e.count, 0)
+         - a[1].reduce((s, e) => s + ((e.decision.favor_targets||[]).filter(x=>!state.disabledNPCs.has(x.npc))[0]?.score||0) * e.count, 0);
+  });
+
+  for (const [npc, entries] of sorted) {
+    const group = document.createElement('div');
+    group.className = 'summary-group';
+    const totalFavor = entries.reduce((sum, e) => {
+      const t = (e.decision.favor_targets||[]).filter(x => !state.disabledNPCs.has(x.npc));
+      return sum + (t[0]?.score||0) * e.count;
+    }, 0);
+    const npcName = npc.split(' (')[0];
+    const cap = state.traderCapacity[npcName];
+    const broke = cap && cap.remaining <= 0 && cap.limit > 0;
+    const isPri = state.prioritizedNPCs.has(npcName);
+
+    group.innerHTML = `<div class="summary-group-header npc">
+      <button class="pri-btn${isPri?' active':''}" onclick="togglePrioritizeNPC('${escapeHtml(npcName).replace(/'/g, "\\'")}')" title="Prioritize">★</button>
+      ${escapeHtml(npc)} <span style="float:right;color:var(--muted);font-weight:normal">${entries.length} items · ${totalFavor.toFixed(1)} favor${broke?' · <span style="color:#e74c3c">⚠ no gold left ('+cap.reset+')</span>':''}</span>
+    </div>`;
+    for (const e of entries) {
+      const t = (e.decision.favor_targets||[]).filter(x => !state.disabledNPCs.has(x.npc));
+      const score = t[0]?.score||0;
+      const item = document.createElement('div');
+      item.className = 'summary-item';
+      item.innerHTML = `<span class="summary-item-name">${escapeHtml(e.name)}</span><span class="summary-item-count">x${e.count}</span><span class="summary-item-value">+${score.toFixed(1)} favor</span>`;
+      group.appendChild(item);
+    }
+    container.appendChild(group);
+  }
+};
+
+window.sharedRenderSellList = function(container, items, showSellReason) {
+  container.innerHTML = '';
+  if (!items.length) { container.innerHTML = '<div class="summary-empty">no sell items</div>'; return; }
+
+  const vendors = items.filter(e => e.decision.verdict === 'sell_vendor');
+  const consignment = items.filter(e => e.decision.verdict === 'sell_consignment');
+
+  if (vendors.length) {
+    const group = document.createElement('div');
+    group.className = 'summary-group';
+    const totalValue = vendors.reduce((sum, e) => sum + (e.value||0) * e.count, 0);
+    group.innerHTML = `<div class="summary-group-header vendor">any vendor <span style="float:right;color:var(--muted);font-weight:normal">${vendors.length} items · ${totalValue.toFixed(0)}g</span></div>`;
+    for (const e of vendors) {
+      const item = document.createElement('div');
+      item.className = 'summary-item';
+      const extra = showSellReason && e.decision.sell_reason ? `<br><span style="color:var(--muted);font-size:11px">${escapeHtml(e.decision.sell_reason)}</span>` : '';
+      item.innerHTML = `<span class="summary-item-name">${escapeHtml(e.name)}${extra}</span><span class="summary-item-count">x${e.count}</span><span class="summary-item-value">${(e.value||0).toFixed(0)}g</span>`;
+      group.appendChild(item);
+    }
+    container.appendChild(group);
+  }
+
+  if (consignment.length) {
+    const group = document.createElement('div');
+    group.className = 'summary-group';
+    const totalValue = consignment.reduce((sum, e) => sum + (e.value||0) * e.count, 0);
+    group.innerHTML = `<div class="summary-group-header consignment">consignment NPC <span style="float:right;color:var(--muted);font-weight:normal">${consignment.length} items · ${totalValue.toFixed(0)}g</span></div>`;
+    for (const e of consignment) {
+      const item = document.createElement('div');
+      item.className = 'summary-item';
+      const extra = showSellReason && e.decision.sell_reason ? `<br><span style="color:var(--muted);font-size:11px">${escapeHtml(e.decision.sell_reason)}</span>` : '';
+      item.innerHTML = `<span class="summary-item-name">${escapeHtml(e.name)}${extra}</span><span class="summary-item-count">x${e.count}</span><span class="summary-item-value">${(e.value||0).toFixed(0)}g</span>`;
+      group.appendChild(item);
+    }
+    container.appendChild(group);
+  }
+};
+
+window.sharedRenderKeepList = function(container, items) {
+  container.innerHTML = '';
+  if (!items.length) { container.innerHTML = '<div class="summary-empty">no keep items</div>'; return; }
+
+  const totalValue = items.reduce((sum, e) => sum + (e.value||0) * e.count, 0);
+  const group = document.createElement('div');
+  group.className = 'summary-group';
+  group.innerHTML = `<div class="summary-group-header" style="color:var(--keep)">manual decision <span style="float:right;color:var(--muted);font-weight:normal">${items.length} items · ${totalValue.toFixed(0)}g</span></div>`;
+  for (const e of items) {
+    const item = document.createElement('div');
+    item.className = 'summary-item';
+    item.innerHTML = `<span class="summary-item-name">${escapeHtml(e.name)}</span><span class="summary-item-count">x${e.count}</span><span class="summary-item-value">${(e.value||0).toFixed(0)}g</span>`;
+    group.appendChild(item);
+  }
+  container.appendChild(group);
+};

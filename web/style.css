@@ -401,6 +401,20 @@ main {
   opacity: 0.6;
 }
 .tracker-events { margin-top: 12px; }
+.tracker-zone-timeline {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tracker-zone-timeline strong {
+  color: var(--text);
+}
+.tz-arrow {
+  opacity: 0.4;
+}
+.tz-count {
+  opacity: 0.4;
+}
 .tracker-events-bar {
   display: flex;
   flex-wrap: wrap;
@@ -448,6 +462,25 @@ main {
   font: inherit;
   font-size: 12px;
 }
+.tracker-start-notes {
+  margin-top: 8px;
+}
+.tracker-start-notes input {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.tracker-start-notes input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
 .notes-edit-input {
   flex: 1;
   padding: 4px 8px;
@@ -705,6 +738,42 @@ td.route {
   font-size: 12px;
   margin-left: 8px;
 }
+/* Timeline */
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+  max-height: 600px;
+  overflow-y: auto;
+}
+.timeline-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  border-left: 3px solid var(--muted);
+  background: var(--row);
+  border-radius: 0 4px 4px 0;
+  font-size: 13px;
+}
+.timeline-time {
+  color: var(--muted);
+  font-size: 11px;
+  min-width: 48px;
+  font-family: monospace;
+}
+.timeline-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.timeline-detail {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
 .summary-empty {
   color: var(--muted);
   font-size: 13px;
@@ -868,6 +937,16 @@ td.route {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-dim);
+}
+.settings-select {
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  cursor: pointer;
+  min-width: 160px;
 }
 .npc-list {
   display: grid;
@@ -2498,6 +2577,54 @@ td.route {
   font-size: 13px;
   resize: vertical;
 }
+
+/* ===== Loot table notes ===== */
+.loot-note {
+  max-width: 280px;
+  white-space: normal;
+  word-break: break-word;
+}
+.loot-note-text {
+  font-size: 13px;
+  cursor: default;
+}
+
+/* ===== Accessibility ===== */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 8px;
+  background: var(--accent);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  z-index: 9999;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.skip-link:focus { top: 8px; }
+
+/* Visible focus ring for keyboard nav */
+*:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px !important;
+}
+*:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Compact display density */
+body.compact .form-group { margin-bottom: 12px; }
+body.compact main { padding: 16px; }
+body.compact .dash-widget-body { padding: 10px; }
+body.compact .summary-section { padding: 12px; }
+body.compact .stat-card { padding: 12px; }
+body.compact .stat-value { font-size: 20px; }
+body.compact td { padding: 5px 10px; }
+body.compact .sidebar-header { padding: 14px 20px; }
+body.compact .nav-item { padding: 6px 20px; font-size: 12px; }
+body.compact header { padding: 8px 16px; }
 
 /* Utility: hide any element. Defined last to win cascade. */
 .hidden { display: none !important; }

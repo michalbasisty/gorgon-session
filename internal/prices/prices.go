@@ -81,13 +81,10 @@ func (s *Store) All() map[string][]Entry {
 	return out
 }
 
-// Summary returns average, median, and occurrence count per item.
+// Summary returns average, last, and occurrence count per item.
 type ItemSummary struct {
 	Average float64 `json:"average"`
-	Median  float64 `json:"median"`
 	Last    float64 `json:"last"`
-	Min     float64 `json:"min"`
-	Max     float64 `json:"max"`
 	Count   int     `json:"count"`
 	Entries int     `json:"entries"` // total occurrences
 }
@@ -102,32 +99,15 @@ func (s *Store) Summarize() map[string]ItemSummary {
 			continue
 		}
 		var sum float64
-		allPrices := make([]float64, 0, len(entries))
-		for _, e := range entries {
-			allPrices = append(allPrices, e.Price)
-		}
-		sort.Float64s(allPrices)
-		min, max := allPrices[0], allPrices[len(allPrices)-1]
-
 		totalCount := 0
 		for _, e := range entries {
 			sum += e.Price * float64(e.Count)
 			totalCount += e.Count
 		}
 		last := entries[len(entries)-1].Price
-		var median float64
-		n := len(allPrices)
-		if n%2 == 0 {
-			median = (allPrices[n/2-1] + allPrices[n/2]) / 2
-		} else {
-			median = allPrices[n/2]
-		}
 		out[name] = ItemSummary{
 			Average: sum / float64(totalCount),
-			Median:  median,
 			Last:    last,
-			Min:     min,
-			Max:     max,
 			Count:   totalCount,
 			Entries: len(entries),
 		}

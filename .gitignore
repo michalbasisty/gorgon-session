@@ -5,3 +5,4 @@ config.yaml
 cache/
 .sessions/
 .slim/deepwork/
+.perch/

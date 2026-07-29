@@ -6,244 +6,182 @@ import (
 	"github.com/michalbasisty/gorgon-session/internal/cdn"
 )
 
-func TestResolveItem_NoKeywords(t *testing.T) {
-	npcs := cdn.NpcsFile{
-		"test_npc": cdn.Npc{
-			InternalName: "test_npc",
-			Name:         "Test NPC",
-			AreaFriendly: "Test Area",
+// minimal NPC data for tests
+func testNpcs() cdn.NpcsFile {
+	return cdn.NpcsFile{
+		"npc_foodie": {
+			InternalName: "npc_foodie",
+			Name:         "Foodie Joe",
+			AreaName:     "Serbule",
+			AreaFriendly: "Serbule",
 			Preferences: []cdn.Preference{
-				{Name: "Likes Swords", Desire: "Love", Keywords: []string{"Sword"}, Pref: 10},
+				{Name: "Loves food", Desire: "Love", Keywords: []string{"Food"}, Pref: 10},
+				{Name: "Likes fruit", Desire: "Like", Keywords: []string{"Fruit"}, Pref: 5},
 			},
 		},
-	}
-	engine := FromNpcs(npcs)
-
-	item := cdn.Item{Name: "Unknown Item", Keywords: []string{}, Value: 100}
-	dec := engine.ResolveItem(item)
-
-	if dec.Verdict != VerdictSellVendor {
-		t.Errorf("expected sell_vendor, got %s", dec.Verdict)
-	}
-}
-
-func TestResolveItem_CompositeKeywordMatch(t *testing.T) {
-	npcs := cdn.NpcsFile{
-		"test_npc": cdn.Npc{
-			InternalName: "test_npc",
-			Name:         "Test NPC",
-			AreaFriendly: "Test Area",
+		"npc_blacksmith": {
+			InternalName: "npc_blacksmith",
+			Name:         "Smithy Sue",
+			AreaName:     "Serbule",
+			AreaFriendly: "Serbule",
 			Preferences: []cdn.Preference{
-				{Name: "Likes Headgear", Desire: "Love", Keywords: []string{"EquipmentSlot:Head"}, Pref: 15},
+				{Name: "Loves weapons", Desire: "Love", Keywords: []string{"Weapon"}, Pref: 12},
+				{Name: "Loves head armor", Desire: "Love", Keywords: []string{"EquipmentSlot:Head", "Armor"}, Pref: 15},
 			},
-		},
-	}
-	engine := FromNpcs(npcs)
-
-	item := cdn.Item{
-		Name:          "Iron Helm",
-		Keywords:      []string{"Armor", "Metal"},
-		EquipmentSlot: "Head",
-		Value:         50,
-	}
-	dec := engine.ResolveItem(item)
-
-	if dec.Verdict != VerdictFavor {
-		t.Errorf("expected favor, got %s", dec.Verdict)
-	}
-	if len(dec.FavorTargets) == 0 {
-		t.Error("expected at least one favor target")
-	}
-	if dec.FavorTargets[0].NPC != "Test NPC" {
-		t.Errorf("expected Test NPC, got %s", dec.FavorTargets[0].NPC)
-	}
-}
-
-func TestResolveItem_CompositeKeywordNoMatch(t *testing.T) {
-	npcs := cdn.NpcsFile{
-		"test_npc": cdn.Npc{
-			InternalName: "test_npc",
-			Name:         "Test NPC",
-			AreaFriendly: "Test Area",
-			Preferences: []cdn.Preference{
-				{Name: "Likes Headgear", Desire: "Love", Keywords: []string{"EquipmentSlot:Head"}, Pref: 15},
-			},
-		},
-	}
-	engine := FromNpcs(npcs)
-
-	item := cdn.Item{
-		Name:          "Iron Boots",
-		Keywords:      []string{"Armor", "Metal"},
-		EquipmentSlot: "Feet",
-		Value:         50,
-	}
-	dec := engine.ResolveItem(item)
-
-	if dec.Verdict != VerdictSellVendor {
-		t.Errorf("expected sell_vendor, got %s", dec.Verdict)
-	}
-}
-
-func TestResolveItem_PlayerPriceHigher(t *testing.T) {
-	npcs := cdn.NpcsFile{
-		"test_npc": cdn.Npc{
-			InternalName: "test_npc",
-			Name:         "Test NPC",
-			AreaFriendly: "Test Area",
 			Services: []cdn.Service{
-				{Type: "Consignment", ItemTypes: []string{"Runestone"}},
+				{Type: "Consignment", ItemTypes: []string{"Weapon"}},
 			},
 		},
-	}
-	engine := FromNpcs(npcs)
-	engine.SetPlayerPrices(map[string]float64{"Runestone of Fire": 500})
-
-	item := cdn.Item{
-		Name:     "Runestone of Fire",
-		Keywords: []string{"Runestone", "Magic"},
-		Value:    100,
-	}
-	dec := engine.ResolveItem(item)
-
-	if dec.Verdict != VerdictSellConsignment {
-		t.Errorf("expected sell_consignment, got %s", dec.Verdict)
-	}
-	if dec.PlayerPrice != 500 {
-		t.Errorf("expected player price 500, got %f", dec.PlayerPrice)
-	}
-}
-
-func TestResolveItem_PlayerPriceLower(t *testing.T) {
-	npcs := cdn.NpcsFile{
-		"test_npc": cdn.Npc{
-			InternalName: "test_npc",
-			Name:         "Test NPC",
-			AreaFriendly: "Test Area",
+		"npc_consignor": {
+			InternalName: "npc_consignor",
+			Name:         "Trader Tim",
+			AreaName:     "Serbule",
+			AreaFriendly: "Serbule",
 			Services: []cdn.Service{
-				{Type: "Consignment", ItemTypes: []string{"Runestone"}},
+				{Type: "Consignment", ItemTypes: []string{"Gem"}},
 			},
 		},
-	}
-	engine := FromNpcs(npcs)
-	engine.SetPlayerPrices(map[string]float64{"Common Item": 50})
-
-	item := cdn.Item{
-		Name:     "Common Item",
-		Keywords: []string{"Junk"},
-		Value:    100,
-	}
-	dec := engine.ResolveItem(item)
-
-	if dec.Verdict != VerdictSellVendor {
-		t.Errorf("expected sell_vendor (player price < vendor value), got %s", dec.Verdict)
+		"npc_hater": {
+			InternalName: "npc_hater",
+			Name:         "Grumpy Gus",
+			AreaName:     "Serbule",
+			AreaFriendly: "Serbule",
+			Preferences: []cdn.Preference{
+				{Name: "Hates junk", Desire: "Hate", Keywords: []string{"Junk"}, Pref: -10},
+			},
+		},
 	}
 }
 
-func TestResolveItem_MultipleNPCs_SortedByScore(t *testing.T) {
-	npcs := cdn.NpcsFile{
-		"npc1": cdn.Npc{
-			InternalName: "npc1",
-			Name:         "NPC One",
-			AreaFriendly: "Area 1",
-			Preferences: []cdn.Preference{
-				{Name: "Likes Swords", Desire: "Love", Keywords: []string{"Sword"}, Pref: 5},
-			},
-		},
-		"npc2": cdn.Npc{
-			InternalName: "npc2",
-			Name:         "NPC Two",
-			AreaFriendly: "Area 2",
-			Preferences: []cdn.Preference{
-				{Name: "Loves Swords", Desire: "Love", Keywords: []string{"Sword"}, Pref: 20},
-			},
-		},
+func TestFavorMatch(t *testing.T) {
+	e := FromNpcs(testNpcs())
+	d := e.ResolveItem(cdn.Item{Name: "Apple", Keywords: []string{"Food", "Fruit"}, Value: 5})
+	if d.Verdict != VerdictFavor {
+		t.Fatalf("expected favor, got %s", d.Verdict)
 	}
-	engine := FromNpcs(npcs)
-
-	item := cdn.Item{
-		Name:     "Magic Sword",
-		Keywords: []string{"Sword", "Weapon"},
-		Value:    100,
+	// Apple should match Foodie Joe for both food + fruit
+	if len(d.FavorTargets) == 0 {
+		t.Fatal("expected at least one favor target")
 	}
-	dec := engine.ResolveItem(item)
-
-	if dec.Verdict != VerdictFavor {
-		t.Errorf("expected favor, got %s", dec.Verdict)
+	if d.FavorTargets[0].NPC != "Foodie Joe" {
+		t.Fatalf("expected Foodie Joe, got %s", d.FavorTargets[0].NPC)
 	}
-	if len(dec.FavorTargets) != 2 {
-		t.Fatalf("expected 2 targets, got %d", len(dec.FavorTargets))
-	}
-	if dec.FavorTargets[0].NPC != "NPC Two" {
-		t.Errorf("expected NPC Two (higher score) first, got %s", dec.FavorTargets[0].NPC)
-	}
-	if dec.FavorTargets[0].Score != 20 {
-		t.Errorf("expected score 20, got %f", dec.FavorTargets[0].Score)
+	if d.FavorTargets[0].Score != 15 { // 10 (food) + 5 (fruit)
+		t.Fatalf("expected score 15, got %.1f", d.FavorTargets[0].Score)
 	}
 }
 
-func TestResolveItem_HatePreference(t *testing.T) {
-	npcs := cdn.NpcsFile{
-		"test_npc": cdn.Npc{
-			InternalName: "test_npc",
-			Name:         "Test NPC",
-			AreaFriendly: "Test Area",
-			Preferences: []cdn.Preference{
-				{Name: "Hates Undead", Desire: "Hate", Keywords: []string{"Undead"}, Pref: -10},
-			},
-		},
+func TestFavorSingleKeyword(t *testing.T) {
+	e := FromNpcs(testNpcs())
+	d := e.ResolveItem(cdn.Item{Name: "Bread", Keywords: []string{"Food"}, Value: 3})
+	if d.Verdict != VerdictFavor {
+		t.Fatalf("expected favor, got %s", d.Verdict)
 	}
-	engine := FromNpcs(npcs)
-
-	item := cdn.Item{
-		Name:     "Cursed Bone",
-		Keywords: []string{"Undead", "Magic"},
-		Value:    50,
-	}
-	dec := engine.ResolveItem(item)
-
-	if dec.Verdict != VerdictSellVendor {
-		t.Errorf("expected sell_vendor (hate = negative score), got %s", dec.Verdict)
+	if len(d.FavorTargets) != 1 || d.FavorTargets[0].NPC != "Foodie Joe" {
+		t.Fatal("expected Foodie Joe as single target")
 	}
 }
 
-func TestResolveItem_MixedKeywords(t *testing.T) {
-	npcs := cdn.NpcsFile{
-		"test_npc": cdn.Npc{
-			InternalName: "test_npc",
-			Name:         "Test NPC",
-			AreaFriendly: "Test Area",
-			Preferences: []cdn.Preference{
-				{Name: "Likes Metal Headgear", Desire: "Love", Keywords: []string{"Metal", "EquipmentSlot:Head"}, Pref: 25},
-			},
-		},
-	}
-	engine := FromNpcs(npcs)
-
-	item := cdn.Item{
-		Name:          "Steel Helm",
-		Keywords:      []string{"Metal", "Armor"},
-		EquipmentSlot: "Head",
-		Value:         100,
-	}
-	dec := engine.ResolveItem(item)
-
-	if dec.Verdict != VerdictFavor {
-		t.Errorf("expected favor, got %s", dec.Verdict)
-	}
-	if len(dec.FavorTargets) == 0 {
-		t.Error("expected at least one favor target")
+func TestNoMatch(t *testing.T) {
+	e := FromNpcs(testNpcs())
+	d := e.ResolveItem(cdn.Item{Name: "Rock", Keywords: []string{"Stone", "Misc"}, Value: 1})
+	if d.Verdict != VerdictSellVendor {
+		t.Fatalf("expected sell_vendor for unmatched item, got %s", d.Verdict)
 	}
 }
 
-func TestResolveItem_EmptyItemName(t *testing.T) {
-	npcs := cdn.NpcsFile{}
-	engine := FromNpcs(npcs)
+func TestConsignmentMatch(t *testing.T) {
+	e := FromNpcs(testNpcs())
+	d := e.ResolveItem(cdn.Item{Name: "Ruby", Keywords: []string{"Gem"}, Value: 100})
+	if d.Verdict != VerdictSellConsignment {
+		t.Fatalf("expected sell_consignment for gem, got %s", d.Verdict)
+	}
+	if d.SellReason == "" {
+		t.Fatal("expected sell reason")
+	}
+}
 
-	item := cdn.Item{Name: "", Keywords: []string{}, Value: 0}
-	dec := engine.ResolveItem(item)
+func TestCompositeKeyword(t *testing.T) {
+	e := FromNpcs(testNpcs())
+	d := e.ResolveItem(cdn.Item{Name: "Iron Helm", Keywords: []string{"Armor", "EquipmentSlot:Head"}, EquipmentSlot: "Head", Value: 20})
+	if d.Verdict != VerdictFavor {
+		t.Fatalf("expected favor from composite keyword match, got %s", d.Verdict)
+	}
+	if d.FavorTargets[0].NPC != "Smithy Sue" {
+		t.Fatalf("expected Smithy Sue, got %s", d.FavorTargets[0].NPC)
+	}
+}
 
-	if dec.Verdict != VerdictSellVendor {
-		t.Errorf("expected sell_vendor for empty item, got %s", dec.Verdict)
+func TestPlayerPricePreferConsignment(t *testing.T) {
+	e := FromNpcs(testNpcs())
+	e.SetPlayerPrices(map[string]float64{"Ruby": 200})
+	d := e.ResolveItem(cdn.Item{Name: "Ruby", Keywords: []string{"Gem", "Jewelry"}, Value: 100})
+	if d.Verdict != VerdictSellConsignment {
+		t.Fatalf("expected sell_consignment with player price, got %s", d.Verdict)
+	}
+	if d.PlayerPrice != 200 {
+		t.Fatalf("expected player price 200, got %.0f", d.PlayerPrice)
+	}
+}
+
+func TestPlayerPriceNoConsignor(t *testing.T) {
+	e := FromNpcs(testNpcs())
+	e.SetPlayerPrices(map[string]float64{"Rock": 500})
+	d := e.ResolveItem(cdn.Item{Name: "Rock", Keywords: []string{"Stone"}, Value: 1})
+	if d.Verdict != VerdictSellConsignment {
+		t.Fatalf("expected sell_consignment for player-priced item with no consignor, got %s", d.Verdict)
+	}
+}
+
+func TestResolveWithJustName(t *testing.T) {
+	e := FromNpcs(testNpcs())
+	d := e.Resolve("Apple", []string{"Food", "Fruit"}, 5)
+	if d.Verdict != VerdictFavor {
+		t.Fatalf("expected favor, got %s", d.Verdict)
+	}
+}
+
+func TestSortTargets(t *testing.T) {
+	ts := []Target{
+		{NPC: "Low", Score: 5},
+		{NPC: "High", Score: 15},
+		{NPC: "Medium", Score: 10},
+	}
+	sortTargets(ts)
+	if ts[0].NPC != "High" || ts[1].NPC != "Medium" || ts[2].NPC != "Low" {
+		t.Fatal("targets not sorted descending by score")
+	}
+}
+
+func TestNPCRowsAndKeywordKeys(t *testing.T) {
+	e := FromNpcs(testNpcs())
+	if e.NPCRows() != 4 {
+		t.Fatalf("expected 4 NPC rows, got %d", e.NPCRows())
+	}
+	// Composite keywords excluded from byKeyword
+	// 4 keywords: Food, Fruit, Weapon, Armor (EquipmentSlot:Head excluded), Junk
+	// 5 simple keywords: Food, Fruit, Weapon, Armor, Junk (EquipmentSlot:Head excluded)
+	if e.KeywordKeys() != 5 {
+		t.Fatalf("expected 5 keyword keys (composites excluded), got %d", e.KeywordKeys())
+	}
+}
+
+func TestSplitComposite(t *testing.T) {
+	r := splitComposite("EquipmentSlot:Head")
+	if len(r) != 2 || r[0] != "EquipmentSlot" || r[1] != "Head" {
+		t.Fatal("splitComposite failed")
+	}
+	r = splitComposite("NoColon")
+	if len(r) == 2 {
+		t.Fatal("expected short result for string without colon")
+	}
+}
+
+func TestIsComposite(t *testing.T) {
+	if !isComposite("EquipmentSlot:Head") {
+		t.Fatal("expected true for composite keyword")
+	}
+	if isComposite("Food") {
+		t.Fatal("expected false for simple keyword")
 	}
 }

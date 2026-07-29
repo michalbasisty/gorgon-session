@@ -46,6 +46,8 @@ type Config struct {
 	// NotificationThreshold: items with Value >= this trigger browser
 	// notifications when looted (if notifications are enabled in the UI).
 	NotificationThreshold float64 `json:"notification_threshold"`
+	// BackupEnabled controls automatic session report backups.
+	BackupEnabled bool `json:"backup_enabled"`
 	// PlayerLogPath is the path to Player.log for skill ticks, zone
 	// transitions, and login detection. Empty = auto-detect.
 	PlayerLogPath string `json:"player_log_path"`
@@ -67,6 +69,7 @@ func Default() Config {
 		SellValueThreshold:    50,
 		PlayerPrices:          map[string]float64{},
 		NotificationThreshold: 500,
+		BackupEnabled:         true,
 		PlayerLogPath:         defaultPlayerLogPath(),
 	}
 }

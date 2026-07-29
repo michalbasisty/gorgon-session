@@ -20,6 +20,8 @@ package favor
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/michalbasisty/gorgon-session/internal/cdn"
 )
@@ -285,40 +287,11 @@ func matchesComposite(keyword string, item cdn.Item) bool {
 
 // splitComposite splits "Field:Value" into ["Field", "Value"].
 func splitComposite(s string) []string {
-	for i := 0; i < len(s); i++ {
-		if s[i] == ':' {
-			return []string{s[:i], s[i+1:]}
-		}
-	}
-	return nil
+	return strings.SplitN(s, ":", 2)
 }
 
 func isComposite(k string) bool {
-	for i := 0; i < len(k); i++ {
-		if k[i] == ':' {
-			return true
-		}
-	}
-	return false
-}
-func isAnyComposite(ks []string) bool {
-	for _, k := range ks {
-		if isComposite(k) {
-			return true
-		}
-	}
-	return false
-}
-func allIn(needles []string, hay map[string]bool) bool {
-	for _, n := range needles {
-		if isComposite(n) {
-			return false
-		}
-		if !hay[n] {
-			return false
-		}
-	}
-	return true
+	return strings.Contains(k, ":")
 }
 func toSet(ks []string) map[string]bool {
 	m := make(map[string]bool, len(ks))
@@ -357,13 +330,7 @@ func (e *Engine) GetNPCs() []cdn.Npc {
 func (e *Engine) KeywordKeys() int { return len(e.byKeyword) }
 
 func sortTargets(ts []Target) {
-	for i := 1; i < len(ts); i++ {
-		j := i
-		for j > 0 && ts[j].Score > ts[j-1].Score {
-			ts[j], ts[j-1] = ts[j-1], ts[j]
-			j--
-		}
-	}
+	sort.Slice(ts, func(i, j int) bool { return ts[i].Score > ts[j].Score })
 }
 
 type NPCInfo struct {

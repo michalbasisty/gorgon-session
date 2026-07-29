@@ -78,78 +78,7 @@ $('#sort-map').addEventListener('click', () => {
 });
 
 function renderFavorList(items) {
-  const container = $('#favor-list');
-  container.innerHTML = '';
-
-  if (!items.length) {
-    container.innerHTML = '<div class="summary-empty">no favor items</div>';
-    return;
-  }
-
-  const byNPC = new Map();
-  for (const e of items) {
-    const targets = (e.decision.favor_targets || []).filter(t => !state.disabledNPCs.has(t.npc));
-    if (!targets.length) {
-      if (!byNPC.has('Disabled/Unknown')) byNPC.set('Disabled/Unknown', []);
-      byNPC.get('Disabled/Unknown').push(e);
-      continue;
-    }
-    const primary = targets[0];
-    const key = `${primary.npc} (${primary.area})`;
-    if (!byNPC.has(key)) byNPC.set(key, []);
-    byNPC.get(key).push(e);
-  }
-
-  // Sort: prioritized NPCs first, then by total favor descending
-  const sorted = [...byNPC.entries()].sort((a, b) => {
-    const aPri = state.prioritizedNPCs.has(a[0].split(' (')[0]) ? 0 : 1;
-    const bPri = state.prioritizedNPCs.has(b[0].split(' (')[0]) ? 0 : 1;
-    if (aPri !== bPri) return aPri - bPri;
-    const aFav = a[1].reduce((s, e) => {
-      const t = (e.decision.favor_targets || []).filter(x => !state.disabledNPCs.has(x.npc));
-      return s + (t.length > 0 ? t[0].score : 0) * e.count;
-    }, 0);
-    const bFav = b[1].reduce((s, e) => {
-      const t = (e.decision.favor_targets || []).filter(x => !state.disabledNPCs.has(x.npc));
-      return s + (t.length > 0 ? t[0].score : 0) * e.count;
-    }, 0);
-    return bFav - aFav;
-  });
-
-  for (const [npc, entries] of sorted) {
-    const group = document.createElement('div');
-    group.className = 'summary-group';
-
-    const totalFavor = entries.reduce((sum, e) => {
-      const targets = (e.decision.favor_targets || []).filter(t => !state.disabledNPCs.has(t.npc));
-      const score = targets.length > 0 ? targets[0].score : 0;
-      return sum + score * e.count;
-    }, 0);
-
-    // Check trader capacity for this NPC
-    const npcName = npc.split(' (')[0];
-    const cap = state.traderCapacity[npcName];
-    const broke = cap && cap.remaining <= 0 && cap.limit > 0;
-    const isPri = state.prioritizedNPCs.has(npcName);
-
-    group.innerHTML = `<div class="summary-group-header npc">
-      <button class="pri-btn${isPri ? ' active' : ''}" onclick="togglePrioritizeNPC('${escapeHtml(npcName).replace(/'/g, "\\'")}')" title="Prioritize this NPC">★</button>
-      ${escapeHtml(npc)} <span style="float:right;color:var(--muted);font-weight:normal">${entries.length} items · ${totalFavor.toFixed(1)} favor${broke ? ' · <span style="color:#e74c3c">⚠ no gold left (' + cap.reset + ')</span>' : ''}</span>
-    </div>`;
-
-    for (const e of entries) {
-      const targets = (e.decision.favor_targets || []).filter(t => !state.disabledNPCs.has(t.npc));
-      const score = targets.length > 0 ? targets[0].score : 0;
-      const item = document.createElement('div');
-      item.className = 'summary-item';
-      item.innerHTML = `
-        <span class="summary-item-name">${escapeHtml(e.name)}</span>
-        <span class="summary-item-count">x${e.count}</span>
-        <span class="summary-item-value">+${score.toFixed(1)} favor</span>`;
-      group.appendChild(item);
-    }
-    container.appendChild(group);
-  }
+  sharedRenderFavorList($('#favor-list'), items);
 }
 
 window.togglePrioritizeNPC = function(name) {
@@ -164,75 +93,11 @@ window.togglePrioritizeNPC = function(name) {
 };
 
 function renderSellList(items) {
-  const container = $('#sell-list');
-  container.innerHTML = '';
-
-  if (!items.length) {
-    container.innerHTML = '<div class="summary-empty">no sell items</div>';
-    return;
-  }
-
-  const vendors = items.filter(e => e.decision.verdict === 'sell_vendor');
-  const consignment = items.filter(e => e.decision.verdict === 'sell_consignment');
-
-  if (vendors.length) {
-    const group = document.createElement('div');
-    group.className = 'summary-group';
-    const totalValue = vendors.reduce((sum, e) => sum + (e.value || 0) * e.count, 0);
-    group.innerHTML = `<div class="summary-group-header vendor">any vendor <span style="float:right;color:var(--muted);font-weight:normal">${vendors.length} items · ${totalValue.toFixed(0)}g</span></div>`;
-    for (const e of vendors) {
-      const item = document.createElement('div');
-      item.className = 'summary-item';
-      item.innerHTML = `
-        <span class="summary-item-name">${escapeHtml(e.name)}</span>
-        <span class="summary-item-count">x${e.count}</span>
-        <span class="summary-item-value">${(e.value || 0).toFixed(0)}g</span>`;
-      group.appendChild(item);
-    }
-    container.appendChild(group);
-  }
-
-  if (consignment.length) {
-    const group = document.createElement('div');
-    group.className = 'summary-group';
-    const totalValue = consignment.reduce((sum, e) => sum + (e.value || 0) * e.count, 0);
-    group.innerHTML = `<div class="summary-group-header consignment">consignment NPC <span style="float:right;color:var(--muted);font-weight:normal">${consignment.length} items · ${totalValue.toFixed(0)}g</span></div>`;
-    for (const e of consignment) {
-      const item = document.createElement('div');
-      item.className = 'summary-item';
-      item.innerHTML = `
-        <span class="summary-item-name">${escapeHtml(e.name)}</span>
-        <span class="summary-item-count">x${e.count}</span>
-        <span class="summary-item-value">${(e.value || 0).toFixed(0)}g</span>`;
-      group.appendChild(item);
-    }
-    container.appendChild(group);
-  }
+  sharedRenderSellList($('#sell-list'), items);
 }
 
 function renderKeepList(items) {
-  const container = $('#keep-list');
-  container.innerHTML = '';
-
-  if (!items.length) {
-    container.innerHTML = '<div class="summary-empty">no keep items</div>';
-    return;
-  }
-
-  const totalValue = items.reduce((sum, e) => sum + (e.value || 0) * e.count, 0);
-  const group = document.createElement('div');
-  group.className = 'summary-group';
-  group.innerHTML = `<div class="summary-group-header" style="color:var(--keep)">manual decision <span style="float:right;color:var(--muted);font-weight:normal">${items.length} items · ${totalValue.toFixed(0)}g</span></div>`;
-  for (const e of items) {
-    const item = document.createElement('div');
-    item.className = 'summary-item';
-    item.innerHTML = `
-      <span class="summary-item-name">${escapeHtml(e.name)}</span>
-      <span class="summary-item-count">x${e.count}</span>
-      <span class="summary-item-value">${(e.value || 0).toFixed(0)}g</span>`;
-    group.appendChild(item);
-  }
-  container.appendChild(group);
+  sharedRenderKeepList($('#keep-list'), items);
 }
 
 function renderMapList(items) {

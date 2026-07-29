@@ -8,18 +8,23 @@
 </head>
 <body>
 <div class="app">
-    <nav class="sidebar">
+  <a href="#main-content" class="skip-link">Skip to content</a>
+  <nav class="sidebar" aria-label="Main navigation">
       <div class="sidebar-header">gorgon-session</div>
-      <ul class="nav-list">
-        <li class="nav-item" data-view="dashboard">Dashboard</li>
-        <li class="nav-item active" data-view="tracker">Tracker</li>
-        <li class="nav-item" data-view="summary">Summary</li>
-        <li class="nav-item" data-view="history">History</li>
-        <li class="nav-item" data-view="favor">Favor</li>
-        <li class="nav-item" data-view="traders">Shops & Traders</li>
-        <li class="nav-item" data-view="items">Item Catalog</li>
-        <li class="nav-item" data-view="warcache">Warcache</li>
-        <li class="nav-item" data-view="settings">Settings</li>
+      <ul class="nav-list" role="tablist">
+        <li class="nav-item" data-view="dashboard" role="tab" tabindex="0" aria-selected="false">Dashboard</li>
+        <li class="nav-item active" data-view="tracker" role="tab" tabindex="0" aria-selected="true">Tracker</li>
+        <li class="nav-item" data-view="summary" role="tab" tabindex="0" aria-selected="false">Summary</li>
+        <li class="nav-item" data-view="history" role="tab" tabindex="0" aria-selected="false">History</li>
+        <li class="nav-item" data-view="favor" role="tab" tabindex="0" aria-selected="false">Favor</li>
+        <li class="nav-item" data-view="traders" role="tab" tabindex="0" aria-selected="false">Shops &amp; Traders</li>
+        <li class="nav-item" data-view="items" role="tab" tabindex="0" aria-selected="false">Item Catalog</li>
+        <li class="nav-item" data-view="warcache" role="tab" tabindex="0" aria-selected="false">Warcache</li>
+        <li class="nav-item" data-view="skills" role="tab" tabindex="0" aria-selected="false">Skills</li>
+        <li class="nav-item" data-view="combat" role="tab" tabindex="0" aria-selected="false">Combat</li>
+        <li class="nav-item" data-view="recipes" role="tab" tabindex="0" aria-selected="false">Recipes</li>
+        <li class="nav-item" data-view="drop-rates" role="tab" tabindex="0" aria-selected="false">Drop Rates</li>
+        <li class="nav-item" data-view="settings" role="tab" tabindex="0" aria-selected="false">Settings</li>
       </ul>
       <div class="sidebar-status">
         <small id="status-badge" class="session-badge idle">idle</small>
@@ -31,19 +36,22 @@
       <h1 id="view-title">Tracker <small id="state">idle</small></h1>
       <div class="controls">
         <input id="dungeon" type="text" placeholder="dungeon / zone name" autocomplete="off">
-        <input id="notes" type="text" placeholder="session notes (optional)" autocomplete="off">
         <button id="start">start</button>
         <button id="stop" disabled>stop</button>
         <span id="elapsed"></span>
+        <button id="refresh-btn" class="add-btn" style="font-size:11px;padding:4px 10px;background:var(--border)" title="Refresh all data (R)">↻</button>
       </div>
     </header>
 
-    <main>
+    <main id="main-content" tabindex="-1">
       <!-- Tracker view -->
       <section id="view-tracker">
         <div class="tracker-header">
           <h2>looted <span id="count" class="badge">0</span></h2>
           <div id="tracker-notes" class="tracker-notes"></div>
+          <div class="tracker-start-notes" id="tracker-start-notes">
+            <input id="notes" type="text" placeholder="session notes (optional)" autocomplete="off">
+          </div>
         </div>
         <div class="tracker-controls">
           <input id="loot-search" type="text" placeholder="search items..." autocomplete="off">
@@ -57,7 +65,7 @@
         </div>
         <table id="loot" aria-busy="false">
           <thead>
-            <tr><th>time</th><th>item</th><th>#</th><th>verdict</th><th>route</th></tr>
+            <tr><th>time</th><th>item</th><th>#</th><th>verdict</th><th>route</th><th>note</th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -73,7 +81,7 @@
             <button id="manual-loot-add">Add</button>
           </div>
         </details>
-        <div id="tracker-events" class="tracker-events"></div>
+        <div id="tracker-events" class="tracker-events" aria-live="polite"></div>
       </section>
 
       <!-- Dashboard view -->
@@ -168,24 +176,32 @@
           </div>
           <div id="history-detail-notes" class="history-detail-notes"></div>
         </div>
-        <div class="history-detail-stats">
-          <div class="stat-card">
-            <div class="stat-label">Total Items</div>
-            <div class="stat-value" id="history-detail-items">0</div>
+          <div class="history-detail-stats">
+            <div class="stat-card">
+              <div class="stat-label">Total Items</div>
+              <div class="stat-value" id="history-detail-items">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Total Value</div>
+              <div class="stat-value" id="history-detail-value">0g</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Favor Items</div>
+              <div class="stat-value" id="history-detail-favor">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Sell Items</div>
+              <div class="stat-value" id="history-detail-sell">0</div>
+            </div>
           </div>
-          <div class="stat-card">
-            <div class="stat-label">Total Value</div>
-            <div class="stat-value" id="history-detail-value">0g</div>
+          <div id="hd-event-stats" class="history-detail-stats" style="margin-top:8px">
+            <div class="stat-card"><div class="stat-label">Deaths</div><div class="stat-value" id="hd-stat-deaths">0</div></div>
+            <div class="stat-card"><div class="stat-label">Kills</div><div class="stat-value" id="hd-stat-kills">0</div></div>
+            <div class="stat-card"><div class="stat-label">Gold Found</div><div class="stat-value" id="hd-stat-gold">0g</div></div>
+            <div class="stat-card"><div class="stat-label">XP Gains</div><div class="stat-value" id="hd-stat-xp">0</div></div>
+            <div class="stat-card"><div class="stat-label">Level Ups</div><div class="stat-value" id="hd-stat-levels">0</div></div>
+            <div class="stat-card"><div class="stat-label">Gathered</div><div class="stat-value" id="hd-stat-gather">0</div></div>
           </div>
-          <div class="stat-card">
-            <div class="stat-label">Favor Items</div>
-            <div class="stat-value" id="history-detail-favor">0</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">Sell Items</div>
-            <div class="stat-value" id="history-detail-sell">0</div>
-          </div>
-        </div>
         <div class="history-detail-content">
           <div class="hd-tabs">
             <button class="hd-tab active" data-tab="summary">Summary</button>
@@ -299,6 +315,47 @@
         <div id="warcache-history"></div>
       </section>
 
+      <!-- Recipes view -->
+      <section id="view-recipes" class="hidden">
+        <h2>Recipe Browser</h2>
+        <div class="history-toolbar">
+          <div class="settings-search" style="flex:1">
+            <input id="recipes-search" type="text" placeholder="search recipes..." autocomplete="off">
+          </div>
+          <select id="recipes-skill-filter" class="settings-select">
+            <option value="">All Skills</option>
+          </select>
+        </div>
+        <div class="items-count"><span id="recipes-count">Loading...</span></div>
+        <div id="recipes-list"></div>
+      </section>
+
+      <!-- Skills view — XP per hour -->
+      <section id="view-skills" class="hidden">
+        <h2>Session Dashboard</h2>
+        <div class="items-count"><span id="skills-count">Loading...</span></div>
+        <div id="skills-list" class="items-grid"></div>
+      </section>
+
+      <!-- Combat Log view -->
+      <section id="view-combat" class="hidden">
+        <h2>Combat Log</h2>
+        <div class="items-count"><span id="combat-count">No combat data</span></div>
+        <div id="combat-stats" class="dash-widgets"></div>
+        <div id="combat-list"></div>
+      </section>
+
+      <!-- Drop Rates view -->
+      <section id="view-drop-rates" class="hidden">
+        <h2>Drop Rates</h2>
+        <p class="muted">Item drop frequency aggregated across all sessions.</p>
+        <div class="tracker-controls">
+          <input id="drop-search" type="text" placeholder="search items..." autocomplete="off">
+        </div>
+        <div class="items-count"><span id="drop-count">Loading...</span></div>
+        <div id="drop-list"></div>
+      </section>
+
       <!-- Settings view -->
       <section id="view-settings" class="hidden">
         <h2>Settings</h2>
@@ -327,6 +384,32 @@
             <label for="settings-notification-threshold">Notification Threshold (g)</label>
             <input id="settings-notification-threshold" type="number" min="0" placeholder="500" autocomplete="off">
             <small class="form-help">Items worth this much or more will trigger browser notifications when looted.</small>
+          </div>
+          <div class="form-group">
+            <label for="settings-startup-view">Default Startup View</label>
+            <select id="settings-startup-view" class="settings-select">
+              <option value="dashboard">Dashboard</option>
+              <option value="tracker">Tracker</option>
+              <option value="summary">Summary</option>
+            </select>
+            <small class="form-help">Which view to show when the app loads.</small>
+          </div>
+          <div class="form-group">
+            <label for="settings-refresh-interval">Auto-Refresh Interval (seconds)</label>
+            <input id="settings-refresh-interval" type="number" min="5" max="300" placeholder="30" autocomplete="off">
+            <small class="form-help">How often to refresh session data (0 = disable auto-refresh).</small>
+          </div>
+          <div class="form-group">
+            <label for="settings-display-density">Display Density</label>
+            <select id="settings-display-density" class="settings-select">
+              <option value="normal">Normal</option>
+              <option value="compact">Compact</option>
+            </select>
+            <small class="form-help">Compact mode reduces spacing for more content on screen.</small>
+          </div>
+          <div class="form-group" style="flex-direction:row;align-items:center;gap:8px">
+            <input id="settings-backup-enabled" type="checkbox" style="width:auto">
+            <label for="settings-backup-enabled" style="margin:0">Enable automatic session backups (hourly)</label>
           </div>
           <button type="submit" id="settings-save">Save Settings</button>
           <span id="settings-status" class="settings-status"></span>
@@ -360,12 +443,21 @@
 
         <div class="settings-actions">
           <h3>Game Overlay</h3>
-          <p class="form-help">The overlay page is designed for OBS Browser Source or a popout window. It sits on top of the game and shows loot + session status in real-time.</p>
+          <p class="form-help">Popout a transparent HUD window showing DPS, zone, loot value, and trader capacity. The overlay sits on top of the game — use your OS window manager to keep it always-on-top.</p>
           <div class="settings-actions-row">
-            <button id="open-overlay" class="add-btn">Open Overlay</button>
+            <button id="open-overlay" class="add-btn" onclick="openOverlay()">Open Overlay</button>
             <button id="copy-overlay-url" class="add-btn" style="background:var(--muted)">Copy URL</button>
           </div>
-          <small class="form-help">URL: <code id="overlay-url">http://localhost:7777/overlay</code></small>
+          <small class="form-help">
+            <strong>No OBS / no browser extensions needed.</strong><br>
+            Press <kbd>O</kbd> to open the overlay from any view.<br>
+            URL: <code id="overlay-url">http://localhost:7777/overlay</code><br>
+            <strong>Always-on-top tips:</strong><br>
+            • Windows: <kbd>Win+Shift+→</kbd> or use <a href="https://github.com/LorenzCK/OnTopReplica" target="_blank" style="color:var(--accent)">OnTopReplica</a><br>
+            • macOS: System Settings → Desktop & Dock → uncheck "Tile windows by holding option"<br>
+            • Linux: Right-click title bar → "Always on Top"<br>
+            • Run from terminal: <code>start msedge --app=http://localhost:7777/overlay</code> (Edge app mode removes browser chrome)
+          </small>
         </div>
       </section>
     </main>
