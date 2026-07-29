@@ -5,14 +5,49 @@ function renderSummary(s) {
   const sellItems = loot.filter(e => e.decision.verdict === 'sell_vendor' || e.decision.verdict === 'sell_consignment');
   const keepItems = loot.filter(e => e.decision.verdict === 'keep');
 
-  $('#sum-dungeon').textContent = s.dungeon || 'unnamed';
-  const dur = new Date(s.ended_at).getTime() - new Date(s.started_at).getTime();
+  const zone = zonePath(s.zone || s.dungeon || 'unnamed');
+  $('#sum-dungeon').textContent = zone;
+  const dur = new Date(s.ended_at || Date.now()).getTime() - new Date(s.started_at).getTime();
   $('#sum-duration').textContent = fmtElapsed(dur);
   $('#sum-items').textContent = `${loot.length} unique items`;
 
   $('#favor-count').textContent = favorItems.length;
   $('#sell-count').textContent = sellItems.length;
   $('#keep-count').textContent = keepItems.length;
+
+  // Event stats
+  const deaths = (s.deaths || []).length;
+  const gold = s.total_gold || 0;
+  const kills = (s.kills || []).length;
+  const xpCount = (s.xp_gains || []).length;
+  const lvlCount = (s.level_ups || []).length;
+  const gatherCount = (s.gathering || []).length;
+
+  let extra = $('#sum-event-stats');
+  if (!extra) {
+    const ref = document.querySelector('.summary-grid');
+    if (ref) {
+      extra = document.createElement('div');
+      extra.id = 'sum-event-stats';
+      extra.className = 'summary-grid';
+      extra.style.marginTop = '12px';
+      ref.after(extra);
+    }
+  }
+  if (extra) {
+    extra.innerHTML = `
+      <div class="summary-section" style="grid-column:1/-1">
+        <h3>Session Events</h3>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;padding:8px 0">
+          <span>💰 ${gold}g found</span>
+          <span>💀 ${deaths} death${deaths !== 1 ? 's' : ''}</span>
+          <span>⚔ ${kills} kill${kills !== 1 ? 's' : ''}</span>
+          <span>🪓 ${gatherCount} gather${gatherCount !== 1 ? 's' : ''}</span>
+          <span>⬆ ${lvlCount} level-up${lvlCount !== 1 ? 's' : ''}</span>
+          <span>📊 ${xpCount} XP ticks</span>
+        </div>
+      </div>`;
+  }
 
   if (state.summarySortMode === 'npc') {
     $('#summary-npc-view').classList.remove('hidden');

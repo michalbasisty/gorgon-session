@@ -2,20 +2,16 @@
 //
 // PG chat-log lines are tagged with a channel prefix like `[Status]` (no
 // `[HH:MM:SS]` timestamp on chat-log lines; that prefix is only on Player.log
-// lines). The speakable loot format GorgonSurveyTracker relies on is:
+// lines).
 //
-//	[Status] <item name> x<count> added to inventory.
-//	[Status] <item name> added to inventory.               (no count)
-//
-// Secondary events you may want later:
-//
-//	[Status] <item name> x<n>? collected!
-//	[Status] You earned <n> XP in <skill>.
-//	Also found <item name> x<n>? (speed bonus...            (bonus find after a collection)
-//
-// The parser is regex-driven and configurable via config.LootRegex so you can
-// change it for non-English locales. The default regex is the same shape
-// GorgonSurveyTracker uses (see survey_tracker.py _INV_ADD_RE).
+// Supported event kinds:
+//   loot:   [Status] <item> x<qty>? added to inventory.
+//   loot:   Also found <item> x<qty>? (speed bonus...
+//   xp:     [Status] You earned <N> XP in <Skill>.
+//   death:  [Status] You have died.
+//   gather: [Status] You collected <item> x<qty>? or <item> collected!
+//   level:  [Status] You are now level <N> in <Skill>!
+//   gold:   [Status] You found <N> councils?.
 package loot
 
 import (
@@ -27,34 +23,55 @@ import (
 )
 
 // DefaultRegex matches the canonical `[Status] <item> x<qty>? added to inventory.`
-// line. Capture group 1 = item name, group 2 (optional) = integer count.
-// If group 2 is absent, count defaults to 1.
 const DefaultRegex = `\[Status\]\s+(.+?)\s+(?:x(\d+)\s+)?added to inventory\.`
 
-// BonusRegex matches "Also found <item> x<n>? (speed bonus..." follow-up lines.
-// Same capture groups as DefaultRegex.
 const BonusRegex = `Also found (.+?)(?:\s+x(\d+))?\s+\(speed bonus`
+const XPRegex = `\[Status\]\s+You earned (\d+) XP in (.+?)\.`
+const DeathRegex = `\[Status\]\s+You have died\.`
+const KillRegex = `\[Status\]\s+You killed (.+?)!`
+const GatherRegex = `\[Status\]\s+You collected (.+?)(?:\s+x(\d+))?(?:\.|!)`
+const LevelRegex = `\[Status\]\s+You are now level (\d+) in (.+?)!`
+const GoldRegex = `\[Status\]\s+You found (\d+) councils?\.?`
 
-// Event is a parsed loot chat-log line.
+// Kind enumerates parsed event types.
+type Kind string
+
+const (
+	KindLoot   Kind = "loot"
+	KindXP     Kind = "xp"
+	KindDeath  Kind = "death"
+	KindKill   Kind = "kill"
+	KindGather Kind = "gather"
+	KindLevel  Kind = "level"
+	KindGold   Kind = "gold"
+)
+
+// Event is one parsed line from a chat log.
 type Event struct {
-	Raw      string // original chat-log line
-	ItemName string // captured item name (trimmed)
-	Count    int    // captured count, or 1 if absent
-	Bonus    bool   // true if this came from a "Also found ... (speed bonus)" line
+	Raw      string // original line
+	Kind     Kind   // which pattern matched
+	ItemName string // loot/gather item name
+	Count    int    // loot/gather count (default 1)
+	Bonus    bool   // loot: speed-bonus find
+	Skill    string // xp/level skill name
+	Amount   int    // xp/gold amount or new level
+	Killer   string // kill: mob name
 }
 
-// Parser converts raw chat-log lines into loot events. It is safe for
-// concurrent use after construction.
+// Parser converts raw chat-log lines into typed events.
 type Parser struct {
-	mu      sync.RWMutex
-	itemRe  *regexp.Regexp
-	bonusRe *regexp.Regexp
+	mu       sync.RWMutex
+	itemRe   *regexp.Regexp
+	bonusRe  *regexp.Regexp
+	xpRe     *regexp.Regexp
+	deathRe  *regexp.Regexp
+	killRe   *regexp.Regexp
+	gatherRe *regexp.Regexp
+	levelRe  *regexp.Regexp
+	goldRe   *regexp.Regexp
 }
 
-// New builds a parser. If lootRegex is empty, DefaultRegex is used. If the
-// supplied regex fails to compile, DefaultRegex is used as a fallback. The
-// bonus regex is always Default-derived (BonusRegex) and not user-tunable in
-// this first phase; future phases can expose it.
+// New builds a parser. If lootRegex is empty, DefaultRegex is used.
 func New(lootRegex string) (*Parser, error) {
 	pat := lootRegex
 	if pat == "" {
@@ -66,12 +83,18 @@ func New(lootRegex string) (*Parser, error) {
 		re = regexp.MustCompile(DefaultRegex)
 	}
 	return &Parser{
-		itemRe:  re,
-		bonusRe: regexp.MustCompile(BonusRegex),
+		itemRe:   re,
+		bonusRe:  regexp.MustCompile(BonusRegex),
+		xpRe:     regexp.MustCompile(XPRegex),
+		deathRe:  regexp.MustCompile(DeathRegex),
+		killRe:   regexp.MustCompile(KillRegex),
+		gatherRe: regexp.MustCompile(GatherRegex),
+		levelRe:  regexp.MustCompile(LevelRegex),
+		goldRe:   regexp.MustCompile(GoldRegex),
 	}, nil
 }
 
-// SetRegex compiles and updates the item regex live.
+// SetRegex compiles and updates the item loot regex live.
 func (p *Parser) SetRegex(pat string) error {
 	if pat == "" {
 		pat = DefaultRegex
@@ -86,32 +109,63 @@ func (p *Parser) SetRegex(pat string) error {
 	return nil
 }
 
-// ParseLine returns nil if the line is not a loot event; otherwise an Event.
-// It checks BOTH the main "added to inventory" pattern and the "Also found
-// (speed bonus)" follow-up line, so a single loot drop that yields a bonus
-// item generates two events (the main one first, the bonus one right after).
+// ParseLine tries every known pattern and returns the first match, or nil.
 func (p *Parser) ParseLine(line string) *Event {
 	line = strings.TrimRight(line, "\r\n")
 	if line == "" {
 		return nil
 	}
-	// "Also found X (speed bonus)" follow-up line.
+
+	// Speed-bonus follow-up (checked first so it wins over loot pattern)
 	if m := p.bonusRe.FindStringSubmatch(line); m != nil {
-		return p.buildEvent(line, m, true)
+		return p.buildItem(line, m, true, KindLoot)
 	}
 
-	// Main "X added to inventory." line.
+	// Loot: "X added to inventory."
 	p.mu.RLock()
-	re := p.itemRe
+	lootRe := p.itemRe
 	p.mu.RUnlock()
-
-	if m := re.FindStringSubmatch(line); m != nil {
-		return p.buildEvent(line, m, false)
+	if m := lootRe.FindStringSubmatch(line); m != nil {
+		return p.buildItem(line, m, false, KindLoot)
 	}
+
+	// XP: "You earned N XP in Skill."
+	if m := p.xpRe.FindStringSubmatch(line); m != nil {
+		amt, _ := strconv.Atoi(m[1])
+		return &Event{Raw: line, Kind: KindXP, Amount: amt, Skill: strings.TrimSpace(m[2])}
+	}
+
+	// Gold: "You found N councils."
+	if m := p.goldRe.FindStringSubmatch(line); m != nil {
+		amt, _ := strconv.Atoi(m[1])
+		return &Event{Raw: line, Kind: KindGold, Amount: amt}
+	}
+
+	// Death: "You have died."
+	if p.deathRe.MatchString(line) {
+		return &Event{Raw: line, Kind: KindDeath}
+	}
+
+	// Kill: "You killed Mob!"
+	if m := p.killRe.FindStringSubmatch(line); m != nil {
+		return &Event{Raw: line, Kind: KindKill, Killer: strings.TrimSpace(m[1])}
+	}
+
+	// Gather: "You collected item xN" or "You collected item!"
+	if m := p.gatherRe.FindStringSubmatch(line); m != nil {
+		return p.buildItem(line, m, false, KindGather)
+	}
+
+	// Level: "You are now level N in Skill!"
+	if m := p.levelRe.FindStringSubmatch(line); m != nil {
+		lvl, _ := strconv.Atoi(m[1])
+		return &Event{Raw: line, Kind: KindLevel, Amount: lvl, Skill: strings.TrimSpace(m[2])}
+	}
+
 	return nil
 }
 
-func (p *Parser) buildEvent(raw string, m []string, bonus bool) *Event {
+func (p *Parser) buildItem(raw string, m []string, bonus bool, kind Kind) *Event {
 	name := strings.TrimSpace(m[1])
 	if name == "" {
 		return nil
@@ -122,6 +176,5 @@ func (p *Parser) buildEvent(raw string, m []string, bonus bool) *Event {
 			count = n
 		}
 	}
-	return &Event{Raw: raw, ItemName: name, Count: count, Bonus: bonus}
+	return &Event{Raw: raw, Kind: kind, ItemName: name, Count: count, Bonus: bonus}
 }
-

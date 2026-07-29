@@ -100,6 +100,35 @@ func (c *Client) download(v Version, source string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+// Area represents one zone/area from areas.json.
+type Area struct {
+	AreaID        int    `json:"AreaID"`
+	Name          string `json:"Name"`
+	BreadcrumbName string `json:"BreadcrumbName"`
+	Parent        int    `json:"Parent"`
+	LevelMin      int    `json:"LevelMin,omitempty"`
+	LevelMax      int    `json:"LevelMax,omitempty"`
+}
+
+// AreasFile is the JSON root of areas.json (flat array).
+type AreasFile []Area
+
+// AreaIndex indexes areas by ID and name for fast lookup.
+type AreaIndex struct {
+	ByID   map[int]Area
+	ByName map[string]int // lowercase name -> AreaID
+}
+
+// IndexAreas builds AreaIndex from parsed areas.
+func IndexAreas(areas AreasFile) AreaIndex {
+	idx := AreaIndex{ByID: make(map[int]Area, len(areas)), ByName: make(map[string]int, len(areas))}
+	for _, a := range areas {
+		idx.ByID[a.AreaID] = a
+		idx.ByName[strings.ToLower(strings.TrimSpace(a.Name))] = a.AreaID
+	}
+	return idx
+}
+
 // ---- Typed source loaders ----------------------------------------------
 
 // ItemsFile is the JSON root of items.json: a map of "item_<id>" -> Item.
@@ -189,6 +218,19 @@ func (c *Client) LoadNpcs(v Version) (NpcsFile, error) {
 	for k, n := range f {
 		n.InternalName = k
 		f[k] = n
+	}
+	return f, nil
+}
+
+// LoadAreas parses areas.json into typed form.
+func (c *Client) LoadAreas(v Version) (AreasFile, error) {
+	b, err := c.Fetch(v, "areas")
+	if err != nil {
+		return nil, err
+	}
+	var f AreasFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		return nil, err
 	}
 	return f, nil
 }

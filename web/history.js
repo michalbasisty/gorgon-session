@@ -74,6 +74,8 @@ async function renderHistory() {
             <div class="history-stat-label">Sell</div>
             <div class="history-stat-value">${session.sell_items}</div>
           </div>
+          ${session.total_gold ? `<div class="history-stat"><div class="history-stat-label">Gold</div><div class="history-stat-value">${session.total_gold}g</div></div>` : ''}
+          ${session.deaths ? `<div class="history-stat"><div class="history-stat-label">Deaths</div><div class="history-stat-value">${session.deaths}</div></div>` : ''}
           </div>
         </div>
       `;
@@ -123,8 +125,9 @@ function renderHistoryDetail(snapshot) {
   const date = new Date(snapshot.started_at);
   const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour12: false, hour: '2-digit', minute: '2-digit'});
 
-  $('#history-detail-title').textContent = snapshot.dungeon || 'Unnamed Session';
-  $('#history-detail-dungeon').textContent = snapshot.dungeon || 'unnamed';
+  const zoneName = zonePath(snapshot.zone || snapshot.dungeon || 'Unnamed Session');
+  $('#history-detail-title').textContent = zoneName;
+  $('#history-detail-dungeon').textContent = zoneName;
   $('#history-detail-date').textContent = dateStr;
   $('#history-detail-duration').textContent = fmtElapsed(new Date(snapshot.ended_at).getTime() - date.getTime());
 
@@ -156,8 +159,41 @@ function renderHistoryDetail(snapshot) {
   $('#history-detail-favor').textContent = favorItems;
   $('#history-detail-sell').textContent = sellItems;
 
-  // Render summary tab
+  // New event stats
+  const deaths = (snapshot.deaths || []).length;
+  const gold = snapshot.total_gold || 0;
+  const kills = (snapshot.kills || []).length;
+  const xpCount = (snapshot.xp_gains || []).length;
+  const lvlCount = (snapshot.level_ups || []).length;
+  const gatherCount = (snapshot.gathering || []).length;
+
+  // Add event stat cards after the existing stat cards row
+  let extraCards = $('#hd-event-stats');
+  if (!extraCards) {
+    const row = $('#history-detail-items').closest('.history-detail-stats') || document.querySelector('.history-detail-stats');
+    if (row) {
+      extraCards = document.createElement('div');
+      extraCards.id = 'hd-event-stats';
+      extraCards.className = 'history-detail-stats';
+      extraCards.style.marginTop = '8px';
+      row.after(extraCards);
+    }
+  }
+  if (extraCards) {
+    extraCards.innerHTML = `
+      <div class="stat-card"><div class="stat-label">Deaths</div><div class="stat-value">${deaths}</div></div>
+      <div class="stat-card"><div class="stat-label">Kills</div><div class="stat-value">${kills}</div></div>
+      <div class="stat-card"><div class="stat-label">Gold Found</div><div class="stat-value">${gold}g</div></div>
+      <div class="stat-card"><div class="stat-label">XP Gains</div><div class="stat-value">${xpCount}</div></div>
+      <div class="stat-card"><div class="stat-label">Level Ups</div><div class="stat-value">${lvlCount}</div></div>
+      <div class="stat-card"><div class="stat-label">Gathered</div><div class="stat-value">${gatherCount}</div></div>
+    `;
+  }
+
+  // Render tabs
   renderHistorySummary(loot);
+  renderHistoryTimeline(snapshot);
+  renderHistoryEvents(snapshot);
 
   // Render items tab
   const sortedLoot = [...loot].sort((a, b) => (b.value * b.count) - (a.value * a.count));
@@ -412,3 +448,85 @@ $('#bulk-delete')?.addEventListener('click', async () => {
   toast(`Deleted ${ids.length} session${ids.length > 1 ? 's' : ''}`, 'success');
   renderHistory();
 });
+
+function renderHistoryEvents(snapshot) {
+  const container = $('#hd-events-content');
+  if (!container) return;
+  const parts = [];
+
+  // XP gains grouped by skill
+  const xp = snapshot.xp_gains || [];
+  if (xp.length) {
+    const bySkill = {};
+    for (const g of xp) { bySkill[g.skill] = (bySkill[g.skill] || 0) + g.amount; }
+    let html = '<div class="summary-group"><div class="summary-group-header npc">XP Gains</div>';
+    for (const [skill, amt] of Object.entries(bySkill).sort((a, b) => b[1] - a[1])) {
+      html += `<div class="summary-item"><span class="summary-item-name">${escapeHtml(skill)}</span><span class="summary-item-value">+${amt} XP</span></div>`;
+    }
+    html += '</div>';
+    parts.push(html);
+  }
+
+  // Level ups
+  const lvls = snapshot.level_ups || [];
+  if (lvls.length) {
+    let html = '<div class="summary-group"><div class="summary-group-header" style="color:var(--favor)">Level Ups</div>';
+    for (const l of lvls) {
+      html += `<div class="summary-item"><span class="summary-item-name">${escapeHtml(l.skill)}</span><span class="summary-item-value">Level ${l.level}</span></div>`;
+    }
+    html += '</div>';
+    parts.push(html);
+  }
+
+  // Kills
+  const kills = snapshot.kills || [];
+  if (kills.length) {
+    const byMob = {};
+    for (const k of kills) { byMob[k.mob] = (byMob[k.mob] || 0) + 1; }
+    let html = '<div class="summary-group"><div class="summary-group-header" style="color:var(--sell)">Kills</div>';
+    for (const [mob, cnt] of Object.entries(byMob).sort((a, b) => b[1] - a[1])) {
+      html += `<div class="summary-item"><span class="summary-item-name">${escapeHtml(mob)}</span><span class="summary-item-value">x${cnt}</span></div>`;
+    }
+    html += '</div>';
+    parts.push(html);
+  }
+
+  // Gathering
+  const gather = snapshot.gathering || [];
+  if (gather.length) {
+    const byItem = {};
+    for (const g of gather) { byItem[g.item] = (byItem[g.item] || 0) + g.count; }
+    let html = '<div class="summary-group"><div class="summary-group-header" style="color:#2ecc71">Gathering</div>';
+    for (const [item, cnt] of Object.entries(byItem).sort((a, b) => b[1] - a[1])) {
+      html += `<div class="summary-item"><span class="summary-item-name">${escapeHtml(item)}</span><span class="summary-item-value">x${cnt}</span></div>`;
+    }
+    html += '</div>';
+    parts.push(html);
+  }
+
+  // Deaths
+  const deaths = snapshot.deaths || [];
+  if (deaths.length) {
+    let html = '<div class="summary-group"><div class="summary-group-header" style="color:#e74c3c">Deaths</div>';
+    for (const d of deaths) {
+      const t = new Date(d.time).toLocaleTimeString();
+      html += `<div class="summary-item"><span class="summary-item-name">${t}</span></div>`;
+    }
+    html += '</div>';
+    parts.push(html);
+  }
+
+  // Zone history
+  const zones = snapshot.zone_history || [];
+  if (zones.length) {
+    let html = '<div class="summary-group"><div class="summary-group-header" style="color:#3498db">Zone Changes</div>';
+    for (const z of zones) {
+      const t = new Date(z.time).toLocaleTimeString();
+      html += `<div class="summary-item"><span class="summary-item-name">${t}</span><span class="summary-item-value">${escapeHtml(z.zone)}</span></div>`;
+    }
+    html += '</div>';
+    parts.push(html);
+  }
+
+  container.innerHTML = parts.length ? parts.join('') : '<div class="summary-empty">No events recorded for this session</div>';
+}

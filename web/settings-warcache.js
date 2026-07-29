@@ -12,6 +12,7 @@ async function renderSettingsView() {
   }
 
   $('#settings-chat-log-dir').value = cfg.chat_log_dir || '';
+  $('#settings-player-log').value = cfg.player_log_path || '';
   $('#settings-loot-regex').value = cfg.loot_regex || '';
   $('#settings-sell-value-threshold').value = cfg.sell_value_threshold || 50;
   $('#settings-notification-threshold').value = cfg.notification_threshold || 500;
@@ -30,12 +31,14 @@ $('#settings-form').addEventListener('submit', async (e) => {
   statusEl.className = 'settings-status';
 
   const chat_log_dir = $('#settings-chat-log-dir').value.trim();
+  const player_log_path = $('#settings-player-log').value.trim();
   const loot_regex = $('#settings-loot-regex').value.trim();
   const sell_value_threshold = parseFloat($('#settings-sell-value-threshold').value) || 0;
   const notification_threshold = parseFloat($('#settings-notification-threshold').value) || 500;
 
   const res = await api('/api/config', 'POST', {
     chat_log_dir,
+    player_log_path,
     loot_regex,
     sell_value_threshold,
     player_prices: state.playerPrices,
@@ -104,6 +107,7 @@ $('#pp-list')?.addEventListener('click', async (e) => {
 async function pushPlayerPricesToServer() {
   await api('/api/config', 'POST', {
     chat_log_dir: $('#settings-chat-log-dir')?.value.trim() || '',
+    player_log_path: $('#settings-player-log')?.value.trim() || '',
     loot_regex: $('#settings-loot-regex')?.value.trim() || '',
     sell_value_threshold: parseFloat($('#settings-sell-value-threshold')?.value) || 0,
     player_prices: state.playerPrices

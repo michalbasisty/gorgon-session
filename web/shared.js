@@ -199,6 +199,7 @@ function renderSession(s) {
 
   renderLootTable(s);
   renderTrackerNotes(s);
+  renderSessionEvents(s);
 
   if (state.currentView === 'summary') {
     renderSummary(s);
@@ -227,6 +228,60 @@ window.editTrackerNotes = function() {
     <button class="notes-cancel-btn" onclick="renderTrackerNotes(state.session)">Cancel</button>`;
   $('#tracker-notes-input').focus();
 };
+
+function zonePath(zoneName) {
+  if (!state.areas || !zoneName) return zoneName;
+  // Find area by lowercase name match
+  const key = zoneName.toLowerCase();
+  let area = null;
+  for (const id of Object.keys(state.areas)) {
+    if (state.areas[id].name.toLowerCase() === key) { area = state.areas[id]; break; }
+  }
+  if (!area) return zoneName;
+  // Build parent chain (Parent=0 means root)
+  let parts = [area.name];
+  let parentId = area.parent;
+  let guard = 0;
+  while (parentId && parentId > 0 && guard < 10) {
+    const p = state.areas[parentId];
+    if (!p) break;
+    parts.unshift(p.name);
+    parentId = p.parent;
+    guard++;
+  }
+  return parts.join(' › ');
+}
+
+function renderSessionEvents(s) {
+  const el = $('#tracker-events');
+  if (!el) return;
+  if (s.state !== 'running') { el.innerHTML = ''; return; }
+
+  const parts = [];
+  if (s.zone) parts.push(`📍 ${escapeHtml(zonePath(s.zone))}`);
+  const xp = s.xp_gains || [];
+  if (xp.length) {
+    // Group by skill, sum amounts
+    const bySkill = {};
+    for (const g of xp) { bySkill[g.skill] = (bySkill[g.skill] || 0) + g.amount; }
+    const skills = Object.entries(bySkill).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    parts.push(`XP: ${skills.map(([sk, am]) => `${sk}+${am}`).join(', ')}${skills.length < Object.keys(bySkill).length ? '…' : ''}`);
+  }
+  const deaths = (s.deaths || []).length;
+  if (deaths) parts.push(`💀 ${deaths} death${deaths > 1 ? 's' : ''}`);
+  const kills = (s.kills || []).length;
+  if (kills) parts.push(`⚔ ${kills} kill${kills > 1 ? 's' : ''}`);
+  const gold = s.total_gold || 0;
+  if (gold) parts.push(`💰 ${gold}g`);
+  const gather = (s.gathering || []).length;
+  if (gather) parts.push(`🪓 ${gather} gather${gather > 1 ? 's' : ''}`);
+  const levels = (s.level_ups || []).length;
+  if (levels) parts.push(`⬆ ${levels} level${levels > 1 ? 's' : ''}`);
+
+  el.innerHTML = parts.length
+    ? `<div class="tracker-events-bar">${parts.join(' &middot; ')}</div>`
+    : '';
+}
 
 window.saveTrackerNotes = async function() {
   const notes = $('#tracker-notes-input')?.value || '';
@@ -329,15 +384,13 @@ $('#stop').addEventListener('click', async () => {
 const es = new EventSource('/api/feed');
 es.onmessage = ev => {
   const data = JSON.parse(ev.data);
-  if (data.kind === 'loot' || data.kind === 'session_start' || data.kind === 'session_stop') {
-    refreshAll();
-    
-    // Check for rare loot notification
-    if (data.kind === 'loot' && data.payload) {
-      const loot = data.payload;
-      if (loot.value >= state.notificationThreshold) {
-        showRareLootNotification(loot);
-      }
+  refreshAll();
+
+  // Rare loot notification
+  if (data.kind === 'loot' && data.payload) {
+    const loot = data.payload;
+    if (loot.value >= state.notificationThreshold) {
+      showRareLootNotification(loot);
     }
   }
 };
@@ -618,6 +671,12 @@ window.toggleDashSettings = function() {
   if (!panel) return;
   panel.classList.toggle('hidden');
   if (!panel.classList.contains('hidden')) renderDashWidgetList();
+};
+
+window.saveDashChanges = function() {
+  saveDashLayout();
+  renderDashboard();
+  $('#dash-settings')?.classList.add('hidden');
 };
 
 function renderDashWidgetList() {

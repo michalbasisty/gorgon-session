@@ -34,8 +34,10 @@ type Server struct {
 	Tailer   *logtail.Tailer
 	Parser   *loot.Parser
 	Trader   *trader.Manager
+	PLTailer *logtail.FileTailer // Player.log tailer
 	ItemByID map[int]cdn.Item // item code -> item data
-	Prices   *prices.Store    // item price history
+	Prices   *prices.Store   // item price history
+	Areas    cdn.AreaIndex   // zone hierarchy lookup
 
 	sessionsMu     sync.RWMutex
 	sessionsCache  []SessionSummary
@@ -43,7 +45,7 @@ type Server struct {
 }
 
 // New wires a Server.
-func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs.FS, tailer *logtail.Tailer, parser *loot.Parser, trader *trader.Manager, items cdn.ItemsFile, ver cdn.Version) *Server {
+func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs.FS, tailer *logtail.Tailer, plTailer *logtail.FileTailer, parser *loot.Parser, trader *trader.Manager, items cdn.ItemsFile, ver cdn.Version, areas cdn.AreaIndex) *Server {
 	// Build item-by-ID map
 	itemByID := make(map[int]cdn.Item)
 	for _, item := range items {
@@ -60,10 +62,12 @@ func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs
 		Favor:    favor,
 		WebFS:    webFS,
 		Tailer:   tailer,
+		PLTailer: plTailer,
 		Parser:   parser,
 		Trader:   trader,
 		ItemByID: itemByID,
 		Prices:   pricesStore,
+		Areas:    areas,
 	}
 }
 
@@ -82,6 +86,7 @@ func (s *Server) Mount() http.Handler {
 	mux.HandleFunc("/api/traders", s.handleTraders)
 	mux.HandleFunc("/api/export", s.handleExport)
 	mux.HandleFunc("/api/import", s.handleImport)
+	mux.HandleFunc("/api/areas", s.handleAreas)
 	mux.HandleFunc("/api/items", s.handleItems)
 	mux.HandleFunc("/api/prices", s.handlePrices)
 	mux.HandleFunc("/api/prices/", s.handlePriceByName)
@@ -294,11 +299,12 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost || r.Method == http.MethodPut {
 		var req struct {
-			ChatLogDir          string             `json:"chat_log_dir"`
-			LootRegex           string             `json:"loot_regex"`
-			SellValueThreshold  float64            `json:"sell_value_threshold"`
-			PlayerPrices        map[string]float64 `json:"player_prices"`
-			NotificationThreshold float64          `json:"notification_threshold"`
+			ChatLogDir           string             `json:"chat_log_dir"`
+			PlayerLogPath        string             `json:"player_log_path"`
+			LootRegex            string             `json:"loot_regex"`
+			SellValueThreshold   float64            `json:"sell_value_threshold"`
+			PlayerPrices         map[string]float64 `json:"player_prices"`
+			NotificationThreshold float64           `json:"notification_threshold"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -307,6 +313,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 		// Update the server's config
 		s.Cfg.ChatLogDir = req.ChatLogDir
+		s.Cfg.PlayerLogPath = req.PlayerLogPath
 		s.Cfg.LootRegex = req.LootRegex
 		s.Cfg.SellValueThreshold = req.SellValueThreshold
 		s.Cfg.NotificationThreshold = req.NotificationThreshold
@@ -324,6 +331,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if s.Tailer != nil {
 			s.Tailer.SetDir(req.ChatLogDir)
 		}
+		if s.PLTailer != nil {
+			s.PLTailer.SetPath(req.PlayerLogPath)
+		}
 		if s.Parser != nil {
 			_ = s.Parser.SetRegex(req.LootRegex)
 		}
@@ -339,6 +349,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"http_addr":              c.HTTPAddr,
 		"chat_log_dir":           c.ChatLogDir,
+		"player_log_path":        c.PlayerLogPath,
 		"loot_regex":             c.LootRegex,
 		"cdn_root":               c.CDNRoot,
 		"fallback_version":       c.FallbackVersion,
@@ -378,6 +389,8 @@ type SessionSummary struct {
 	FavorItems    int       `json:"favor_items"`
 	SellItems     int       `json:"sell_items"`
 	KeepItems     int       `json:"keep_items"`
+	TotalGold     int       `json:"total_gold,omitempty"`
+	Deaths        int       `json:"deaths,omitempty"`
 }
 
 // handleSessions: GET list of all past sessions.
@@ -444,6 +457,8 @@ func (s *Server) buildSessions() []SessionSummary {
 			EndedAt:      snapshot.EndedAt,
 			DurationSecs: int(snapshot.EndedAt.Sub(snapshot.StartedAt).Seconds()),
 			UniqueItems:  len(snapshot.Loot),
+			TotalGold:    snapshot.TotalGold,
+			Deaths:       len(snapshot.Deaths),
 		}
 
 		totalItems := 0
@@ -880,6 +895,24 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleItems: GET all CDN items for the item catalog.
+func (s *Server) handleAreas(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Return areas index as map for easy lookup
+	type areaInfo struct {
+		ID     int    `json:"id"`
+		Name   string `json:"name"`
+		Parent int    `json:"parent"`
+	}
+	out := make(map[int]areaInfo, len(s.Areas.ByID))
+	for id, a := range s.Areas.ByID {
+		out[id] = areaInfo{ID: a.AreaID, Name: a.Name, Parent: a.Parent}
+	}
+	writeJSON(w, out)
+}
+
 func (s *Server) handleItems(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

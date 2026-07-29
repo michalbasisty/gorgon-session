@@ -46,6 +46,9 @@ type Config struct {
 	// NotificationThreshold: items with Value >= this trigger browser
 	// notifications when looted (if notifications are enabled in the UI).
 	NotificationThreshold float64 `json:"notification_threshold"`
+	// PlayerLogPath is the path to Player.log for skill ticks, zone
+	// transitions, and login detection. Empty = auto-detect.
+	PlayerLogPath string `json:"player_log_path"`
 }
 
 // Default returns the platform-appropriate default config.
@@ -64,6 +67,7 @@ func Default() Config {
 		SellValueThreshold:    50,
 		PlayerPrices:          map[string]float64{},
 		NotificationThreshold: 500,
+		PlayerLogPath:         defaultPlayerLogPath(),
 	}
 }
 
@@ -153,4 +157,19 @@ func defaultChatLogDir() string {
 		return filepath.Join(appData, "LocalLow", "Elder Game", "Project Gorgon", "ChatLogs")
 	}
 	return filepath.Join(home, ".local", "share", "Elder Game", "Project Gorgon", "ChatLogs")
+}
+
+// defaultPlayerLogPath returns the default Player.log path.
+// On Windows: %USERPROFILE%\AppData\LocalLow\Elder Game\Project Gorgon\Player.log
+func defaultPlayerLogPath() string {
+	home, _ := os.UserHomeDir()
+	if runtime.GOOS == "windows" {
+		la := os.Getenv("LOCALAPPDATA")
+		if la == "" {
+			la = filepath.Join(home, "AppData", "Local")
+		}
+		appData := filepath.Dir(la)
+		return filepath.Join(appData, "LocalLow", "Elder Game", "Project Gorgon", "Player.log")
+	}
+	return filepath.Join(home, ".local", "share", "Elder Game", "Project Gorgon", "Player.log")
 }

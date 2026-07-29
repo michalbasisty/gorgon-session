@@ -206,9 +206,6 @@ main {
   width: 100%;
   flex: 1;
 }
-section.hidden {
-  display: none;
-}
 
 /* ===== Dashboard Widget System ===== */
 .dash-header {
@@ -402,6 +399,19 @@ section.hidden {
   flex: 1;
   font-style: italic;
   opacity: 0.6;
+}
+.tracker-events { margin-top: 12px; }
+.tracker-events-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--row);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--fg);
+  line-height: 1.6;
 }
 .notes-edit-btn {
   background: none;
@@ -2488,3 +2498,6 @@ td.route {
   font-size: 13px;
   resize: vertical;
 }
+
+/* Utility: hide any element. Defined last to win cascade. */
+.hidden { display: none !important; }

@@ -73,6 +73,7 @@
             <button id="manual-loot-add">Add</button>
           </div>
         </details>
+        <div id="tracker-events" class="tracker-events"></div>
       </section>
 
       <!-- Dashboard view -->
@@ -81,12 +82,13 @@
           <h2>Overview</h2>
           <button class="dash-customize-btn" onclick="toggleDashSettings()">⚙ Widgets</button>
         </div>
-        <div id="dash-widgets" class="dash-widgets"></div>
         <div id="dash-settings" class="dash-settings hidden">
           <h3>Dashboard Widgets</h3>
-          <p class="form-help">Toggle widgets on/off. Drag to reorder (arrows below).</p>
+          <p class="form-help">Toggle widgets on/off. Use ▲▼ to reorder.</p>
           <div id="dash-widget-list"></div>
+          <button class="save-btn" onclick="saveDashChanges()" style="margin-top:12px">Save & Close</button>
         </div>
+        <div id="dash-widgets" class="dash-widgets"></div>
       </section>
 
       <!-- Summary view -->
@@ -187,7 +189,9 @@
         <div class="history-detail-content">
           <div class="hd-tabs">
             <button class="hd-tab active" data-tab="summary">Summary</button>
+            <button class="hd-tab" data-tab="timeline">Timeline</button>
             <button class="hd-tab" data-tab="items">All Items</button>
+            <button class="hd-tab" data-tab="events">Events</button>
           </div>
           <div id="hd-panel-summary" class="hd-panel">
             <div class="summary-grid">
@@ -205,9 +209,17 @@
               </div>
             </div>
           </div>
+          <div id="hd-panel-timeline" class="hd-panel hidden">
+            <h3>Timeline</h3>
+            <div id="hd-timeline-content"></div>
+          </div>
           <div id="hd-panel-items" class="hd-panel hidden">
             <h3>All Items</h3>
             <div id="history-detail-items-list"></div>
+          </div>
+          <div id="hd-panel-events" class="hd-panel hidden">
+            <h3>Session Events</h3>
+            <div id="hd-events-content"></div>
           </div>
         </div>
       </section>
@@ -295,6 +307,11 @@
             <label for="settings-chat-log-dir">Chat Log Directory</label>
             <input id="settings-chat-log-dir" type="text" placeholder="e.g., C:\Users\...\AppData\LocalLow\Elder Game\Project Gorgon\ChatLogs" autocomplete="off">
             <small class="form-help">The folder where Project Gorgon writes its *.log files.</small>
+          </div>
+          <div class="form-group">
+            <label for="settings-player-log">Player.log Path</label>
+            <input id="settings-player-log" type="text" placeholder="e.g., C:\Users\...\AppData\LocalLow\Elder Game\Project Gorgon\Player.log" autocomplete="off">
+            <small class="form-help">Path to Player.log for zone detection and login tracking. Auto-detected on most installs.</small>
           </div>
           <div class="form-group">
             <label for="settings-loot-regex">Loot Regex</label>

@@ -29,6 +29,7 @@ import (
 	"github.com/michalbasisty/gorgon-session/internal/favor"
 	"github.com/michalbasisty/gorgon-session/internal/logtail"
 	"github.com/michalbasisty/gorgon-session/internal/loot"
+	"github.com/michalbasisty/gorgon-session/internal/playerlog"
 	"github.com/michalbasisty/gorgon-session/internal/server"
 	"github.com/michalbasisty/gorgon-session/internal/session"
 	"github.com/michalbasisty/gorgon-session/internal/trader"
@@ -90,6 +91,14 @@ func main() {
 	}
 	log.Printf("loaded %d items, %d npcs", len(items), len(npcs))
 
+	areas, err := client.LoadAreas(ver)
+	if err != nil {
+		log.Printf("load areas.json: %v (zone enrichment disabled)", err)
+		areas = cdn.AreasFile{}
+	}
+	areaIdx := cdn.IndexAreas(areas)
+	log.Printf("loaded %d areas", len(areas))
+
 	nameIdx := indexItemsByName(items)
 	engine := favor.FromNpcs(npcs)
 	engine.SetPlayerPrices(cfg.PlayerPrices)
@@ -132,6 +141,16 @@ func main() {
 		log.Printf("tailing newest *.log in %s", cfg.ChatLogDir)
 	}
 
+	// Player.log tailer (skill ticks, zone transitions, login detection)
+	plParser := playerlog.New()
+	plTail := logtail.NewFileTailer(cfg.PlayerLogPath)
+	_ = plTail.Start(ctx)
+	go playerPipeline(ctx, plTail, plParser, mgr)
+
+	if cfg.PlayerLogPath != "" {
+		log.Printf("watching Player.log: %s", cfg.PlayerLogPath)
+	}
+
 	// Initialize trader manager
 	traderFile := filepath.Join(filepath.Dir(cfg.ReportDir), "traders.json")
 	traderMgr := trader.New(traderFile)
@@ -141,7 +160,7 @@ func main() {
 
 	// Pass the embedded web FS directly; the embed directive in web/embed.go
 	// uses bare filenames so paths inside the FS have no "web/" prefix.
-	srv := server.New(cfg, mgr, engine, web.Files, t, parser, traderMgr, items, ver)
+	srv := server.New(cfg, mgr, engine, web.Files, t, plTail, parser, traderMgr, items, ver, areaIdx)
 	h := srv.Mount()
 	hs := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -315,7 +334,7 @@ func (i itemIndex) Lookup(rawName string) struct {
 	}{name, cdn.Item{Name: name}}
 }
 
-// pipeline converts chat lines into session loot events.
+// pipeline converts chat lines into session events of all types.
 func pipeline(ctx context.Context, t *logtail.Tailer, p *loot.Parser, idx itemIndex, eng *favor.Engine, mgr *session.Manager, cdnClient *cdn.Client, cdnVersion cdn.Version) {
 	for {
 		select {
@@ -329,19 +348,61 @@ func pipeline(ctx context.Context, t *logtail.Tailer, p *loot.Parser, idx itemIn
 			if ev == nil {
 				continue
 			}
-			hit := idx.Lookup(ev.ItemName)
-			dec := eng.ResolveItem(hit.Item)
-			mgr.AddLoot(session.LootEntry{
-				Name:      hit.Item.Name,
-				ItemID:    hit.Item.ItemID,
-				IconURL:   cdnClient.IconURL(cdnVersion, hit.Item.IconID),
-				Valor:     hit.Item.Value,
-				Count:     ev.Count,
-				Bonus:     ev.Bonus,
-				FirstSeen: time.Now(),
-				LastSeen:  time.Now(),
-				Decision:  dec,
-			})
+
+			switch ev.Kind {
+			case loot.KindLoot:
+				hit := idx.Lookup(ev.ItemName)
+				dec := eng.ResolveItem(hit.Item)
+				mgr.AddLoot(session.LootEntry{
+					Name:      hit.Item.Name,
+					ItemID:    hit.Item.ItemID,
+					IconURL:   cdnClient.IconURL(cdnVersion, hit.Item.IconID),
+					Valor:     hit.Item.Value,
+					Count:     ev.Count,
+					Bonus:     ev.Bonus,
+					FirstSeen: time.Now(),
+					LastSeen:  time.Now(),
+					Decision:  dec,
+				})
+			case loot.KindXP:
+				mgr.AddXPGain(ev.Skill, ev.Amount)
+			case loot.KindDeath:
+				mgr.AddDeath("")
+			case loot.KindKill:
+				mgr.AddKill(ev.Killer)
+			case loot.KindGather:
+				mgr.AddGather(ev.ItemName, ev.Count)
+			case loot.KindLevel:
+				mgr.AddLevelUp(ev.Skill, ev.Amount)
+			case loot.KindGold:
+				mgr.AddGold(ev.Amount)
+			}
+		}
+	}
+}
+
+// playerPipeline routes Player.log events into the session manager.
+func playerPipeline(ctx context.Context, t *logtail.FileTailer, p *playerlog.Parser, mgr *session.Manager) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case line, ok := <-t.Lines:
+			if !ok {
+				return
+			}
+			ev := p.ParseLine(line)
+			if ev == nil {
+				continue
+			}
+			switch ev.Kind {
+			case playerlog.KindZone:
+				mgr.SetZone(ev.Zone)
+			case playerlog.KindLogin:
+				// Login events can be used later for auto-session start
+			case playerlog.KindSkill:
+				// Skill ticks are granular; we already get "You earned N XP" from ChatLogs
+			}
 		}
 	}
 }
