@@ -74,14 +74,20 @@ Session reports are saved under your user profile:
 From project root:
 
 ```powershell
-go build -o gorgon-session.exe ./cmd/gorgon
+go build -o bin\gorgon-session.exe ./cmd/gorgon
 ```
 
-Or build into `bin`:
+This compiles to:
 
-```powershell
-go build -o bin\gorgon.exe ./cmd/gorgon
+- `bin/gorgon-session.exe` (Windows)
+
+Optional (if you have `make` installed):
+
+```bash
+make build
 ```
+
+(`make build` also outputs into `bin/`.)
 
 ---
 

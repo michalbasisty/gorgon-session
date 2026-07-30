@@ -221,7 +221,7 @@ func main() {
 		time.Sleep(500 * time.Millisecond)
 		url := fmt.Sprintf("http://%s", cfg.HTTPAddr)
 		log.Printf("opening browser at %s", url)
-		
+
 		var cmd *exec.Cmd
 		switch runtime.GOOS {
 		case "windows":
@@ -231,7 +231,7 @@ func main() {
 		default: // Linux, BSD, etc.
 			cmd = exec.Command("xdg-open", url)
 		}
-		
+
 		if err := cmd.Start(); err != nil {
 			log.Printf("failed to open browser: %v", err)
 		}
@@ -406,6 +406,60 @@ func pipeline(ctx context.Context, t *logtail.Tailer, p *loot.Parser, idx itemIn
 
 // playerPipeline routes Player.log events into the session manager.
 func playerPipeline(ctx context.Context, t *logtail.FileTailer, p *playerlog.Parser, mgr *session.Manager) {
+	type recentUse struct {
+		name     string
+		nameNorm string
+		id       int
+		time     time.Time
+	}
+	recent := make([]recentUse, 0, 64)
+
+	normAbility := func(s string) string {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" {
+			return ""
+		}
+		var b strings.Builder
+		b.Grow(len(s))
+		for _, r := range s {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+				b.WriteRune(r)
+			}
+		}
+		return b.String()
+	}
+
+	pruneRecent := func(now time.Time) {
+		cut := now.Add(-8 * time.Second)
+		j := 0
+		for i := 0; i < len(recent); i++ {
+			if recent[i].time.After(cut) {
+				recent[j] = recent[i]
+				j++
+			}
+		}
+		recent = recent[:j]
+	}
+
+	matchRecentUse := func(ev *playerlog.Event) (recentUse, bool) {
+		now := time.Now()
+		pruneRecent(now)
+		norm := normAbility(ev.AbilityName)
+		for i := len(recent) - 1; i >= 0; i-- {
+			ru := recent[i]
+			if now.Sub(ru.time) > 4*time.Second {
+				continue
+			}
+			if ev.AbilityID > 0 && ru.id > 0 && ev.AbilityID == ru.id {
+				return ru, true
+			}
+			if norm != "" && ru.nameNorm != "" && norm == ru.nameNorm {
+				return ru, true
+			}
+		}
+		return recentUse{}, false
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -426,9 +480,31 @@ func playerPipeline(ctx context.Context, t *logtail.FileTailer, p *playerlog.Par
 			case playerlog.KindSkill:
 				// Skill ticks are granular; we already get "You earned N XP" from ChatLogs
 			case playerlog.KindUseAbility:
-				mgr.AddAbilityUse(ev.AbilityName)
+				mgr.AddAbilityUseWithID(ev.AbilityName, ev.AbilityID)
+				ru := recentUse{name: ev.AbilityName, nameNorm: normAbility(ev.AbilityName), id: ev.AbilityID, time: time.Now()}
+				recent = append(recent, ru)
+				pruneRecent(time.Now())
 			case playerlog.KindOnAttackHitMe:
-				mgr.AddCombatHit(ev.AbilityName)
+				// Count entity-hit lines only when they match a recent player use.
+				if ru, ok := matchRecentUse(ev); ok {
+					name := ru.name
+					if strings.TrimSpace(name) == "" {
+						name = ev.AbilityName
+					}
+					id := ru.id
+					if id <= 0 {
+						id = ev.AbilityID
+					}
+					if ev.Evaded {
+						mgr.AddCombatEvadeWithID(name, id)
+					} else {
+						mgr.AddCombatHitWithID(name, id)
+					}
+				}
+			case playerlog.KindCorpseSearch:
+				if ev.Mob != "" {
+					mgr.AddKill(ev.Mob)
+				}
 			}
 		}
 	}

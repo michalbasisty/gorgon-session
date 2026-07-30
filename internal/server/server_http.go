@@ -12,18 +12,6 @@ import (
 	"github.com/michalbasisty/gorgon-session/internal/config"
 )
 
-// handleOverlay serves the game overlay HUD page.
-func (s *Server) handleOverlay(w http.ResponseWriter, r *http.Request) {
-	b, err := fs.ReadFile(s.WebFS, "overlay.html")
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = w.Write(b)
-}
-
 // handleStatic serves embedded dashboard assets by bare filename; "/" -> "index.html".
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimPrefix(r.URL.Path, "/")

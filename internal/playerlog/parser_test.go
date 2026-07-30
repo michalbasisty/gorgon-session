@@ -101,6 +101,75 @@ func TestParseOnAttackHitMeWithTimestamp(t *testing.T) {
 	}
 }
 
+func TestParseOnAttackHitMeAbilityEvaded(t *testing.T) {
+	p := newTestParser()
+	ev := p.ParseLine(`[12:34:56] entity_99999: OnAttackHitMe(Ability(Slice,789)). Evaded = True`)
+	if ev == nil || ev.Kind != KindOnAttackHitMe {
+		t.Fatalf("expected on_attack_hit_me event, got %v", ev)
+	}
+	if ev.AbilityName != "Slice" || ev.AbilityID != 789 {
+		t.Fatalf("expected Slice/789, got %q/%d", ev.AbilityName, ev.AbilityID)
+	}
+	if !ev.Evaded {
+		t.Fatal("expected Evaded=true")
+	}
+}
+
+func TestParseOnAttackHitMeNamed(t *testing.T) {
+	p := newTestParser()
+	ev := p.ParseLine(`[08:15:31] entity_868259: OnAttackHitMe(Toxin Bomb 8). Evaded = False`)
+	if ev == nil || ev.Kind != KindOnAttackHitMe {
+		t.Fatalf("expected on_attack_hit_me event, got %v", ev)
+	}
+	if ev.AbilityName != "Toxin Bomb 8" {
+		t.Fatalf("expected 'Toxin Bomb 8', got %q", ev.AbilityName)
+	}
+	if ev.AbilityID != 0 {
+		t.Fatalf("expected ability ID 0 for name-only hit lines, got %d", ev.AbilityID)
+	}
+	if ev.Evaded {
+		t.Fatal("expected Evaded=false")
+	}
+}
+
+func TestParseOnAttackHitMeNamedEvaded(t *testing.T) {
+	p := newTestParser()
+	ev := p.ParseLine(`[08:15:31] entity_868259: OnAttackHitMe(Toxin Bomb 8). Evaded = True`)
+	if ev == nil || ev.Kind != KindOnAttackHitMe {
+		t.Fatalf("expected on_attack_hit_me event, got %v", ev)
+	}
+	if !ev.Evaded {
+		t.Fatal("expected Evaded=true")
+	}
+}
+
+func TestParseOnAttackHitMeIncomingLocalPlayerIgnoredNamed(t *testing.T) {
+	p := newTestParser()
+	ev := p.ParseLine(`[08:15:31] localPlayer - entity_966629: OnAttackHitMe(Arrow). Evaded = False`)
+	if ev != nil {
+		t.Fatalf("expected nil for incoming localPlayer hit line, got %v", ev)
+	}
+}
+
+func TestParseOnAttackHitMeIncomingLocalPlayerIgnoredAbilityForm(t *testing.T) {
+	p := newTestParser()
+	ev := p.ParseLine(`[08:15:31] localPlayer - entity_966629: OnAttackHitMe(Ability(Arrow,1234))`)
+	if ev != nil {
+		t.Fatalf("expected nil for incoming localPlayer hit line, got %v", ev)
+	}
+}
+
+func TestParseCorpseSearch(t *testing.T) {
+	p := newTestParser()
+	ev := p.ParseLine(`[08:15:30] LocalPlayer: ProcessTalkScreen(870486, "Search Corpse of Deceased Guardian", "...", "", [], System.String[], 1, Corpse)`)
+	if ev == nil || ev.Kind != KindCorpseSearch {
+		t.Fatalf("expected corpse_search event, got %v", ev)
+	}
+	if ev.Mob != "Deceased Guardian" {
+		t.Fatalf("expected mob 'Deceased Guardian', got %q", ev.Mob)
+	}
+}
+
 func TestParseEmptyLine(t *testing.T) {
 	p := newTestParser()
 	if ev := p.ParseLine(""); ev != nil {

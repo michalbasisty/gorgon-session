@@ -28,7 +28,6 @@ func (s *Server) Mount() http.Handler {
 	mux.HandleFunc("/api/zone-npcs", s.handleZoneNPCs)
 	mux.HandleFunc("/api/drop-rates", s.handleDropRates)
 	mux.HandleFunc("/api/sessions/bulk-export", s.handleBulkExport)
-	mux.HandleFunc("/overlay", s.handleOverlay)
 	mux.HandleFunc("/", s.handleStatic)
 	return mux
 }

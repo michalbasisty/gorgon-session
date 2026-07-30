@@ -102,7 +102,7 @@ func (c *Client) download(v Version, source string) ([]byte, error) {
 
 // Area represents one zone/area from areas.json.
 type Area struct {
-	FriendlyName     string `json:"FriendlyName"`
+	FriendlyName      string `json:"FriendlyName"`
 	ShortFriendlyName string `json:"ShortFriendlyName,omitempty"`
 }
 
@@ -111,7 +111,7 @@ type AreasFile map[string]Area
 
 // AreaIndex indexes areas by friendly name for lookups.
 type AreaIndex struct {
-	ByInternal map[string]Area // internal key -> Area
+	ByInternal map[string]Area   // internal key -> Area
 	ByFriendly map[string]string // lowercase friendly name -> internal key
 }
 
@@ -144,15 +144,15 @@ type RecipeResultItem struct {
 
 // Recipe from recipes.json.
 type Recipe struct {
-	InternalName          string              `json:"InternalName"`
-	Name                  string              `json:"Name"`
-	Description           string              `json:"Description,omitempty"`
-	Skill                 string              `json:"Skill"`
-	SkillLevelReq         int                 `json:"SkillLevelReq"`
-	Ingredients           []RecipeIngredient  `json:"Ingredients,omitempty"`
-	ResultItems           []RecipeResultItem  `json:"ResultItems,omitempty"`
-	RewardSkill           string              `json:"RewardSkill,omitempty"`
-	RewardSkillXp         int                 `json:"RewardSkillXp,omitempty"`
+	InternalName           string             `json:"InternalName"`
+	Name                   string             `json:"Name"`
+	Description            string             `json:"Description,omitempty"`
+	Skill                  string             `json:"Skill"`
+	SkillLevelReq          int                `json:"SkillLevelReq"`
+	Ingredients            []RecipeIngredient `json:"Ingredients,omitempty"`
+	ResultItems            []RecipeResultItem `json:"ResultItems,omitempty"`
+	RewardSkill            string             `json:"RewardSkill,omitempty"`
+	RewardSkillXp          int                `json:"RewardSkillXp,omitempty"`
 	RewardSkillXpFirstTime int                `json:"RewardSkillXpFirstTime,omitempty"`
 }
 
@@ -198,15 +198,15 @@ type NpcsFile map[string]Npc
 
 // Npc holds the gift-preference + service data needed for routing loot.
 type Npc struct {
-	InternalName string         `json:"-"` // populated by LoadNpcs from key
-	Name         string         `json:"Name"`
-	AreaName     string         `json:"AreaName"`
-	AreaFriendly string         `json:"AreaFriendlyName"`
-	Desc         string         `json:"Desc"`
-	Pos          string         `json:"Pos"`
-	ItemGifts    []string       `json:"ItemGifts"`
-	Preferences  []Preference   `json:"Preferences"`
-	Services     []Service      `json:"Services"`
+	InternalName string       `json:"-"` // populated by LoadNpcs from key
+	Name         string       `json:"Name"`
+	AreaName     string       `json:"AreaName"`
+	AreaFriendly string       `json:"AreaFriendlyName"`
+	Desc         string       `json:"Desc"`
+	Pos          string       `json:"Pos"`
+	ItemGifts    []string     `json:"ItemGifts"`
+	Preferences  []Preference `json:"Preferences"`
+	Services     []Service    `json:"Services"`
 }
 
 // Preference is one gift rule: an item matches if its keywords cover every
@@ -223,11 +223,11 @@ type Preference struct {
 
 // Service is one NPC service (Store, Consignment, Storage, Training, ...).
 type Service struct {
-	Type        string   `json:"Type"`        // "Store","Consignment","Storage","Training","InstallAugments"
-	Favor       string   `json:"Favor,omitempty"`
-	ItemTypes   []string `json:"ItemTypes,omitempty"`
-	Skills      []string `json:"Skills,omitempty"`
-	Unlocks     []string `json:"Unlocks,omitempty"`
+	Type         string   `json:"Type"` // "Store","Consignment","Storage","Training","InstallAugments"
+	Favor        string   `json:"Favor,omitempty"`
+	ItemTypes    []string `json:"ItemTypes,omitempty"`
+	Skills       []string `json:"Skills,omitempty"`
+	Unlocks      []string `json:"Unlocks,omitempty"`
 	CapIncreases []string `json:"CapIncreases,omitempty"`
 }
 
@@ -308,11 +308,18 @@ func (c *Client) LoadRecipes(v Version) (RecipesFile, error) {
 
 // Ability is one row from abilities.json.
 type Ability struct {
-	InternalName string  `json:"InternalName"`
-	Name         string  `json:"Name"`
-	Skill        string  `json:"Skill"`
-	DamageType   string  `json:"DamageType"`
-	BaseDamage   float64 `json:"PvE.BaseDamage"`
+	InternalName string `json:"InternalName"`
+	Name         string `json:"Name"`
+	Skill        string `json:"Skill"`
+	DamageType   string `json:"DamageType"`
+	PvE          struct {
+		Damage float64 `json:"Damage"`
+	} `json:"PvE"`
+}
+
+// BaseDamage returns PvE base damage value used for estimated DPS.
+func (a Ability) BaseDamage() float64 {
+	return a.PvE.Damage
 }
 
 // AbilitiesFile is the JSON root of abilities.json (map of internal key -> Ability).

@@ -127,6 +127,17 @@ window.toggleShowHiddenOnly = function() {
 };
 
 // Traders view functions
+function normalizeMapKey(v) {
+  return String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function isSameMapName(a, b) {
+  const na = normalizeMapKey(a);
+  const nb = normalizeMapKey(b);
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
 async function renderTradersView() {
   const container = $('#traders-list');
   if (!container) return;
@@ -139,12 +150,20 @@ async function renderTradersView() {
       return;
     }
     const areas = Array.isArray(areasResp) ? areasResp : [];
-  
+
   const search = ($('#trader-search')?.value || '').toLowerCase();
   const showHiddenOnly = state.showHiddenOnly;
-  
-  // Sort areas alphabetically
-  areas.sort((a, b) => String(a?.area || '').localeCompare(String(b?.area || '')));
+  const currentZone = String(state.session?.zone || '').trim();
+
+  // Sort areas: current zone first, then alphabetical.
+  areas.sort((a, b) => {
+    const aArea = String(a?.area || '');
+    const bArea = String(b?.area || '');
+    const aCurrent = isSameMapName(aArea, currentZone) ? 1 : 0;
+    const bCurrent = isSameMapName(bArea, currentZone) ? 1 : 0;
+    if (aCurrent !== bCurrent) return bCurrent - aCurrent;
+    return aArea.localeCompare(bArea);
+  });
   
   container.innerHTML = '';
   const shopSet = new Set(state.shopNPCs);
@@ -186,11 +205,13 @@ async function renderTradersView() {
     
     const areaSection = document.createElement('div');
     areaSection.className = 'trader-area-section';
-    
+
+    const isCurrentArea = isSameMapName(areaData?.area || '', currentZone);
+
     const header = document.createElement('div');
-    header.className = 'trader-area-header';
+    header.className = 'trader-area-header' + (isCurrentArea ? ' current-zone' : '');
     header.innerHTML = `
-      <span>${escapeHtml(areaData?.area || 'Unknown')} <span class="badge">${filtered.length}</span></span>
+      <span>${escapeHtml(areaData?.area || 'Unknown')} ${isCurrentArea ? '<span class="badge" style="margin-right:6px;background:var(--accent);color:#fff">current</span>' : ''}<span class="badge">${filtered.length}</span></span>
       <div class="area-header-actions">
         <button class="hide-btn" title="Hide region" onclick="toggleHideArea('${areaName}')">👁</button>
         <span class="collapse-icon">▼</span>
@@ -245,8 +266,8 @@ async function renderTradersView() {
         <div class="trader-row-bottom">
           <label>Limit: <input type="number" class="limit-input" value="${npc.weekly_limit || 0}" min="0" step="1000"></label>
           <label>Left: <input type="number" class="left-input" value="${remaining}" min="0" step="100"></label>
-          <label>Reset Days: <input type="number" class="days-input" value="${npc.reset_days || 5}" min="0" max="30"></label>
-          <label>Reset Hours: <input type="number" class="hours-input" value="${npc.reset_hours || 22}" min="0" max="23"></label>
+          <label>Reset Days: <input type="number" class="days-input" value="${npc.reset_days ?? 5}" min="0" max="30"></label>
+          <label>Reset Hours: <input type="number" class="hours-input" value="${npc.reset_hours ?? 22}" min="0" max="23"></label>
           <button class="save-btn" onclick="saveTraderRow(this)">💾 Save</button>
         </div>
       `;
@@ -346,9 +367,15 @@ async function renderTradersView() {
     container.appendChild(hiddenSection);
   }
   
-    if (container.children.length === 0) {
-      container.innerHTML = '<div class="summary-empty">No traders found</div>';
-    }
+  	  if (container.children.length === 0) {
+	      container.innerHTML = '<div class="summary-empty">No traders found</div>';
+	    } else if (currentZone) {
+	      const info = document.createElement('div');
+	      info.className = 'summary-empty';
+	      info.style.marginBottom = '8px';
+	      info.textContent = 'Current map: ' + currentZone + ' (prioritized at top)';
+	      container.prepend(info);
+	    }
   } catch (e) {
     console.error('renderTradersView failed', e);
     container.innerHTML = `<div class="summary-empty">Traders render error: ${escapeHtml(e?.message || String(e))}</div>`;

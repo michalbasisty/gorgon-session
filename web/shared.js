@@ -28,6 +28,7 @@ const state = {
   notificationThreshold: 500,
   priceHistory: {}, // item name → { average, last, count }
   combatData: null,
+  combatOverrides: {}, // ability key -> { direct_damage, dot_parts:[{ element, damage, seconds }] }
   zoneNpcs: [],
   dropRates: null
 };
@@ -39,6 +40,13 @@ const stateEl = $('#state');
 const countEl = $('#count');
 const emptyEl = $('#empty');
 const elapsedEl = $('#elapsed');
+
+let __trackerLootSig = '';
+let __trackerEventsSig = '';
+let __trackerNotesSig = '';
+let __pricePollTick = 0;
+let __combatPollTick = 0;
+let __tradersZoneSig = '';
 
 // Load settings from localStorage
 function loadSettings() {
@@ -59,6 +67,8 @@ function loadSettings() {
     state.hiddenTraders = new Set(hiddenTraders);
     const prioritizedNPCs = JSON.parse(localStorage.getItem('prioritizedNPCs') || '[]');
     state.prioritizedNPCs = new Set(prioritizedNPCs);
+    const combatOverrides = JSON.parse(localStorage.getItem('combatOverrides') || '{}');
+    state.combatOverrides = combatOverrides && typeof combatOverrides === 'object' ? combatOverrides : {};
   } catch (e) {
     state.disabledNPCs = new Set();
     state.shopNPCs = [];
@@ -68,6 +78,7 @@ function loadSettings() {
     state.hiddenAreas = new Set();
     state.hiddenTraders = new Set();
     state.prioritizedNPCs = new Set();
+    state.combatOverrides = {};
   }
 }
 
@@ -80,6 +91,7 @@ function saveSettings() {
   localStorage.setItem('hiddenAreas', JSON.stringify([...state.hiddenAreas]));
   localStorage.setItem('hiddenTraders', JSON.stringify([...state.hiddenTraders]));
   localStorage.setItem('prioritizedNPCs', JSON.stringify([...state.prioritizedNPCs]));
+  localStorage.setItem('combatOverrides', JSON.stringify(state.combatOverrides || {}));
 }
 
 loadSettings();
@@ -93,15 +105,14 @@ async function loadTraderCapacity() {
       const npcs = Array.isArray(area?.npcs) ? area.npcs : [];
       for (const npc of npcs) {
         const dur = npc.time_until_reset || '';
-        const dMatch = dur.match(/(\d+)d/);
-        const hMatch = dur.match(/(\d+)h/);
-        const days = dMatch ? parseInt(dMatch[1]) : 99;
+        const resetMinutes = parseResetDurationMinutes(dur);
         cap[npc.npc_name] = {
           limit: npc.weekly_limit || 0,
           sold: npc.sold_this_week || 0,
           remaining: Math.max(0, (npc.weekly_limit || 0) - (npc.sold_this_week || 0)),
           reset: dur,
-          daysUntilReset: days,
+          resetMinutes,
+          daysUntilReset: Math.floor(resetMinutes / (24 * 60)),
           area: area.area || ''
         };
       }
@@ -131,6 +142,205 @@ function fmtElapsed(ms) {
   if (m) return `${m}m${String(sec).padStart(2, '0')}s`;
   return `${sec}s`;
 }
+
+function parseResetDurationMinutes(text) {
+  const raw = String(text || '').trim().toLowerCase();
+  if (!raw) return Number.POSITIVE_INFINITY;
+  if (raw === 'now' || raw.includes('less than a minute')) return 0;
+
+  const d = raw.match(/(\d+)\s*d/);
+  const h = raw.match(/(\d+)\s*h/);
+  const m = raw.match(/(\d+)\s*m/);
+
+  const days = d ? Number(d[1]) : 0;
+  const hours = h ? Number(h[1]) : 0;
+  const mins = m ? Number(m[1]) : 0;
+
+  const total = days * 24 * 60 + hours * 60 + mins;
+  return Number.isFinite(total) && total >= 0 ? total : Number.POSITIVE_INFINITY;
+}
+
+function combatAbilityKey(a) {
+  if (a && a.ability_id) return `id:${a.ability_id}`;
+  const name = String(a?.name || '').trim().toLowerCase();
+  return `name:${name}`;
+}
+
+function getCombatOverride(a) {
+  const key = combatAbilityKey(a);
+  return state.combatOverrides?.[key] || null;
+}
+
+function normalizeTargetKind(v) {
+  const s = String(v || '').trim().toLowerCase();
+  if (s === 'armor' || s === 'armour') return 'armor';
+  return 'health';
+}
+
+function parseDirectPartsSpec(spec) {
+  const out = [];
+  const raw = String(spec || '').trim();
+  if (!raw) return out;
+  const chunks = raw.split(',').map(s => s.trim()).filter(Boolean);
+  for (const chunk of chunks) {
+    // Supported formats:
+    // - Element:Damage
+    // - Element:Damage@armor
+    // - Element:Damage armor
+    let m = chunk.match(/^([^:]+):\s*([0-9]+(?:\.[0-9]+)?)(?:\s*@\s*(health|armor|armour)|\s+(health|armor|armour))?$/i);
+    if (!m) continue;
+    const element = String(m[1] || '').trim();
+    const damage = Number(m[2]);
+    const target = normalizeTargetKind(m[3] || m[4] || 'health');
+    if (!element || !Number.isFinite(damage) || damage < 0) continue;
+    out.push({ element, damage, target });
+  }
+  return out;
+}
+
+function formatDirectPartsSpec(parts) {
+  const arr = Array.isArray(parts) ? parts : [];
+  return arr
+    .filter(p => p && String(p.element || '').trim())
+    .map(p => {
+      const target = normalizeTargetKind(p.target || 'health');
+      return `${String(p.element).trim()}:${Number(p.damage || 0).toFixed(0)}${target === 'armor' ? '@armor' : ''}`;
+    })
+    .join(', ');
+}
+
+function parseDotPartsSpec(spec) {
+  const out = [];
+  const raw = String(spec || '').trim();
+  if (!raw) return out;
+  const chunks = raw.split(',').map(s => s.trim()).filter(Boolean);
+  for (const chunk of chunks) {
+    // Supported formats (damage is TOTAL over duration, not per second):
+    // - Element:Damage/Seconds
+    // - Element:Damage over Seconds
+    // Optional target suffix: @armor or @health
+    // Examples: Poison:381/10, Fire:80 over 10s@armor
+    let m = chunk.match(/^([^:]+):\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*([0-9]+(?:\.[0-9]+)?)\s*s?(?:\s*@\s*(health|armor|armour)|\s+(health|armor|armour))?$/i);
+    if (!m) {
+      m = chunk.match(/^([^:]+):\s*([0-9]+(?:\.[0-9]+)?)\s*over\s*([0-9]+(?:\.[0-9]+)?)\s*s?(?:\s*@\s*(health|armor|armour)|\s+(health|armor|armour))?$/i);
+    }
+    if (!m) continue;
+    const element = String(m[1] || '').trim();
+    const damage = Number(m[2]);
+    const seconds = Number(m[3]);
+    const target = normalizeTargetKind(m[4] || m[5] || 'health');
+    if (!element || !Number.isFinite(damage) || damage < 0 || !Number.isFinite(seconds) || seconds <= 0) continue;
+    out.push({ element, damage, seconds, target });
+  }
+  return out;
+}
+
+function formatDotPartsSpec(parts) {
+  const arr = Array.isArray(parts) ? parts : [];
+  return arr
+    .filter(p => p && String(p.element || '').trim())
+    .map(p => {
+      const target = normalizeTargetKind(p.target || 'health');
+      return `${String(p.element).trim()}:${Number(p.damage || 0).toFixed(0)}/${Number(p.seconds || 0).toFixed(1)}${target === 'armor' ? '@armor' : ''}`;
+    })
+    .join(', ');
+}
+
+function getAbilityDamageModel(a) {
+  const ov = getCombatOverride(a) || {};
+  const base = Number(a?.base_damage || 0);
+  const baseType = String(a?.damage_type || 'Unknown').trim() || 'Unknown';
+
+  let directParts = [];
+  if (Array.isArray(ov.direct_parts) && ov.direct_parts.length) {
+    directParts = ov.direct_parts
+      .map(p => ({
+        element: String(p?.element || '').trim() || baseType,
+        damage: Number(p?.damage || 0),
+        target: normalizeTargetKind(p?.target || 'health'),
+      }))
+      .filter(p => Number.isFinite(p.damage) && p.damage >= 0);
+  } else {
+    let directHealth = Number(ov.direct_damage);
+    if (!Number.isFinite(directHealth) || directHealth < 0) directHealth = base;
+    const directArmor = Number.isFinite(Number(ov.direct_armor_damage)) && Number(ov.direct_armor_damage) > 0
+      ? Number(ov.direct_armor_damage)
+      : 0;
+    if (directHealth > 0) directParts.push({ element: baseType, damage: directHealth, target: 'health' });
+    if (directArmor > 0) directParts.push({ element: baseType, damage: directArmor, target: 'armor' });
+  }
+
+  let dotParts = [];
+  if (Array.isArray(ov.dot_parts)) {
+    dotParts = ov.dot_parts
+      .map(p => ({
+        element: String(p?.element || '').trim() || 'Unknown',
+        damage: Number(p?.damage || 0),
+        seconds: Number(p?.seconds || 0),
+        target: normalizeTargetKind(p?.target || 'health'),
+      }))
+      .filter(p => Number.isFinite(p.damage) && p.damage >= 0 && Number.isFinite(p.seconds) && p.seconds > 0);
+  } else {
+    // Backward compatibility for older single-DoT overrides.
+    const dot = Number(ov.dot_damage);
+    const dotSec = Number(ov.dot_seconds);
+    if (Number.isFinite(dot) && dot > 0 && Number.isFinite(dotSec) && dotSec > 0) {
+      dotParts = [{ element: String(ov.dot_element || 'Unknown'), damage: dot, seconds: dotSec, target: 'health' }];
+    }
+  }
+
+  const directTotal = directParts.reduce((s, p) => s + p.damage, 0);
+  const dotTotal = dotParts.reduce((s, p) => s + p.damage, 0);
+  const castHealth = directParts.reduce((s, p) => s + (p.target === 'health' ? p.damage : 0), 0) +
+    dotParts.reduce((s, p) => s + (p.target === 'health' ? p.damage : 0), 0);
+  const castArmor = directParts.reduce((s, p) => s + (p.target === 'armor' ? p.damage : 0), 0) +
+    dotParts.reduce((s, p) => s + (p.target === 'armor' ? p.damage : 0), 0);
+
+  return {
+    directParts,
+    directTotal,
+    dotParts,
+    dotTotal,
+    castHealth,
+    castArmor,
+    castTotal: directTotal + dotTotal,
+    directPartsSpec: formatDirectPartsSpec(directParts),
+    dotPartsSpec: formatDotPartsSpec(dotParts),
+  };
+}
+
+window.saveCombatOverrideFromRow = function(btn) {
+  const row = btn?.closest('tr');
+  if (!row) return;
+  const key = btn.dataset.key;
+  if (!key) return;
+  const direct = Number(row.querySelector('.ov-direct')?.value);
+  const directArmor = Number(row.querySelector('.ov-direct-armor')?.value);
+  const directPartsSpec = row.querySelector('.ov-directparts')?.value || '';
+  const dotPartsSpec = row.querySelector('.ov-dotparts')?.value || '';
+  const directParts = parseDirectPartsSpec(directPartsSpec);
+  const dotParts = parseDotPartsSpec(dotPartsSpec);
+
+  if (!state.combatOverrides || typeof state.combatOverrides !== 'object') state.combatOverrides = {};
+  state.combatOverrides[key] = {
+    direct_damage: Number.isFinite(direct) && direct >= 0 ? direct : 0,
+    direct_armor_damage: Number.isFinite(directArmor) && directArmor >= 0 ? directArmor : 0,
+    direct_parts: directParts,
+    dot_parts: dotParts,
+  };
+  saveSettings();
+  if (state.currentView === 'combat') renderCombatView();
+  toast('Combat estimate updated', 'success');
+};
+
+window.resetCombatOverrideFromRow = function(btn) {
+  const key = btn?.dataset?.key;
+  if (!key || !state.combatOverrides) return;
+  delete state.combatOverrides[key];
+  saveSettings();
+  if (state.currentView === 'combat') renderCombatView();
+  toast('Combat estimate reset', 'info');
+};
 
 // API helpers
 async function api(path, method = 'GET', body = null) {
@@ -274,18 +484,62 @@ function renderSession(s) {
     elapsedEl.textContent = '';
   }
 
-  renderLootTable(s);
-  renderTrackerNotes(s);
-  renderSessionEvents(s);
-  // Show start-notes input only when idle
-  const startNotes = $('#tracker-start-notes');
-  if (startNotes) startNotes.style.display = s.state === 'idle' ? '' : 'none';
+  // Tracker view: avoid full DOM rewrites every poll to prevent flicker/jumps.
+  if (state.currentView === 'tracker') {
+    const loot = Array.isArray(s.loot) ? s.loot : [];
+    const lastLoot = loot.length ? loot[loot.length - 1] : null;
+    const lootSig = [
+      s.state,
+      loot.length,
+      lastLoot?.name || '',
+      lastLoot?.count || 0,
+      lastLoot?.last_seen || '',
+      ($('#loot-search')?.value || '').toLowerCase(),
+      $('#loot-filter')?.value || '',
+    ].join('|');
+    if (lootSig !== __trackerLootSig && !document.querySelector('.loot-note-input')) {
+      __trackerLootSig = lootSig;
+      renderLootTable(s);
+    }
+
+    const notesSig = `${s.state}|${s.notes || ''}`;
+    const editingNotes = !!$('#tracker-notes-input');
+    if (notesSig !== __trackerNotesSig && !editingNotes) {
+      __trackerNotesSig = notesSig;
+      renderTrackerNotes(s);
+    }
+
+    const eventsSig = [
+      s.zone || '',
+      (s.zone_history || []).length,
+      (s.xp_gains || []).length,
+      (s.deaths || []).length,
+      (s.kills || []).length,
+      s.total_gold || 0,
+      (s.gathering || []).length,
+      (s.level_ups || []).length,
+    ].join('|');
+    if (eventsSig !== __trackerEventsSig) {
+      __trackerEventsSig = eventsSig;
+      renderSessionEvents(s);
+    }
+
+    const startNotes = $('#tracker-start-notes');
+    if (startNotes) startNotes.style.display = s.state === 'idle' ? '' : 'none';
+  }
 
   if (state.currentView === 'summary') {
     renderSummary(s);
   }
   if (state.currentView === 'dashboard') {
     renderDashboard();
+  }
+  if (state.currentView === 'traders') {
+    const zoneSig = String(s.zone || '').trim().toLowerCase();
+    if (zoneSig !== __tradersZoneSig) {
+      __tradersZoneSig = zoneSig;
+      renderTradersView();
+    }
   }
 }
 
@@ -691,6 +945,15 @@ $('#recipes-skill-filter')?.addEventListener('change', () => {
 // Poll feed replacement (avoids per-tab EventSource connection limits)
 let __lastLootSig = '';
 let __pollInFlight = false;
+function isCombatOverrideEditing() {
+  const ae = document.activeElement;
+  if (!ae || !ae.classList) return false;
+  return ae.classList.contains('ov-direct') ||
+    ae.classList.contains('ov-direct-armor') ||
+    ae.classList.contains('ov-directparts') ||
+    ae.classList.contains('ov-dotparts');
+}
+
 async function pollUpdates() {
   if (__pollInFlight) return;
   __pollInFlight = true;
@@ -712,8 +975,19 @@ async function pollUpdates() {
     }
 
     renderSession(s);
-    const ph = await api('/api/prices');
-    if (ph) state.priceHistory = ph;
+
+    // Price history doesn't need 3s cadence; fetch less often to reduce UI churn.
+    __pricePollTick++;
+    if (__pricePollTick % 5 === 0) {
+      const ph = await api('/api/prices');
+      if (ph) state.priceHistory = ph;
+    }
+
+    // Live combat tracking refresh in background while Combat view is open.
+    __combatPollTick++;
+    if (state.currentView === 'combat' && __combatPollTick % 2 === 0 && !isCombatOverrideEditing()) {
+      await renderCombatView();
+    }
   } catch (e) {
     // keep silent; api() already toasts for hard failures
   } finally {
@@ -893,17 +1167,23 @@ widgetRenderers['favor-chart'] = function(w, sessions) {
 widgetRenderers['reset-alerts'] = function(w, sessions) {
   const caps = state.traderCapacity || {};
   const sorted = Object.entries(caps)
-    .sort((a, b) => a[1].daysUntilReset - b[1].daysUntilReset)
+    .filter(([_, c]) => (c.limit || 0) > 0)
+    .sort((a, b) => {
+      const am = Number.isFinite(a[1].resetMinutes) ? a[1].resetMinutes : Number.POSITIVE_INFINITY;
+      const bm = Number.isFinite(b[1].resetMinutes) ? b[1].resetMinutes : Number.POSITIVE_INFINITY;
+      if (am !== bm) return am - bm;
+      return (a[1].remaining || 0) - (b[1].remaining || 0);
+    })
     .slice(0, 10);
-  if (sorted.length === 0) return '<div class="dash-info-box"><span class="muted">No trader data</span></div>';
+  if (sorted.length === 0) return '<div class="dash-info-box"><span class="muted">No trader limits tracked yet</span></div>';
   let html = '<div class="dash-recent-list">';
   for (const [name, cap] of sorted) {
-    const hasCap = cap.limit > 0;
-    const color = cap.daysUntilReset <= 1 ? 'var(--danger)' : cap.daysUntilReset <= 3 ? 'var(--sell-vendor)' : 'var(--muted)';
+    const mins = Number.isFinite(cap.resetMinutes) ? cap.resetMinutes : Number.POSITIVE_INFINITY;
+    const color = mins <= 24 * 60 ? '#e74c3c' : mins <= 3 * 24 * 60 ? 'var(--sell-vendor)' : 'var(--muted)';
     html += `<div class="dash-recent-item" style="cursor:default">
       <div><div class="dash-item-dungeon">${escapeHtml(name)}</div>
       <div class="dash-item-meta">${escapeHtml(cap.area)}</div></div>
-      <div class="dash-item-value" style="color:${color}">${escapeHtml(cap.reset)}${hasCap ? ' · ' + Math.round(cap.remaining).toLocaleString() + 'g' : ''}</div>
+      <div class="dash-item-value" style="color:${color}">${escapeHtml(cap.reset || '?')} · ${Math.round(cap.remaining || 0).toLocaleString()}g</div>
     </div>`;
   }
   html += '</div>';
@@ -934,18 +1214,16 @@ widgetRenderers['combat-stats'] = async function(w, sessions) {
   try {
     const data = await api('/api/combat');
     if (!data || data.length === 0) return '<div class="dash-info-box"><span class="muted">No combat data yet</span></div>';
-    const totalDPS = data.reduce((a, b) => a + (b.est_dps || 0), 0);
-    const totalUses = data.reduce((a, b) => a + b.uses, 0);
-    const totalHits = data.reduce((a, b) => a + (b.hits || 0), 0);
-    const topAbils = data.sort((a, b) => (b.est_dps || 0) - (a.est_dps || 0)).slice(0, 5);
+    const totalDmg = data.reduce((a, b) => a + (b.est_damage || 0), 0);
+    const totalUses = data.reduce((a, b) => a + (b.uses || 0), 0);
+    const topAbils = [...data].sort((a, b) => (b.est_damage || 0) - (a.est_damage || 0)).slice(0, 5);
     let html = `<div class="dashboard-stats" style="margin-bottom:8px">
-      <div class="stat-card"><div class="stat-label">Est. DPS</div><div class="stat-value">${totalDPS.toFixed(1)}</div></div>
+      <div class="stat-card"><div class="stat-label">Est. Damage</div><div class="stat-value">${totalDmg.toFixed(0)}</div></div>
       <div class="stat-card"><div class="stat-label">Abilities</div><div class="stat-value">${totalUses}</div></div>
-      <div class="stat-card"><div class="stat-label">Hits</div><div class="stat-value">${totalHits}</div></div>
-    </div><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Top by DPS</div>`;
+    </div><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Top by damage</div>`;
     for (const a of topAbils) {
       html += `<div style="display:flex;justify-content:space-between;padding:3px 8px;font-size:12px;border-bottom:1px solid var(--border)">
-        <span>${escapeHtml(a.name)}</span><span style="color:var(--accent)">${(a.est_dps || 0).toFixed(1)} dps</span></div>`;
+        <span>${escapeHtml(a.name)}</span><span style="color:var(--accent)">${(a.est_damage || 0).toFixed(0)} dmg</span></div>`;
     }
     return html;
   } catch { return '<div class="dash-info-box"><span class="muted">Combat data unavailable</span></div>'; }
@@ -1019,9 +1297,10 @@ function renderBarChart(canvasId, sessions, extract, colorA, colorB) {
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   canvas.width = rect.width * dpr;
   canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const w = rect.width;
   const h = rect.height;
 
@@ -1061,6 +1340,242 @@ function renderBarChart(canvasId, sessions, extract, colorA, colorB) {
     ctx.textAlign = 'center';
     ctx.fillText(values[i].toFixed(0), x + barW/2, y - 4);
   }
+}
+
+function buildCombatTimelineSeries(sessionSnapshot, combatData) {
+  const s = sessionSnapshot || state.session;
+  const uses = Array.isArray(s?.ability_uses) ? s.ability_uses : [];
+  if (!s?.started_at || uses.length === 0) return null;
+
+  const byID = new Map();
+  const byName = new Map();
+  for (const a of (combatData || [])) {
+    if (a?.ability_id) byID.set(Number(a.ability_id), a);
+    const nk = String(a?.name || '').trim().toLowerCase();
+    if (nk) byName.set(nk, a);
+  }
+
+  const startMs = new Date(s.started_at).getTime();
+  const endMs = (s.state === 'running' || !s.ended_at) ? Date.now() : new Date(s.ended_at).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+
+  const durationSec = Math.max(1, Math.floor((endMs - startMs) / 1000));
+  const targetPoints = 48;
+  const bucketSec = Math.max(1, Math.ceil(durationSec / targetPoints));
+  const bucketCount = Math.max(2, Math.ceil(durationSec / bucketSec));
+
+  const byAbility = new Map();
+  const byAbilityTime = new Map();
+  const byDamageType = new Map();
+
+  const ensure = (m, k) => {
+    if (!m.has(k)) m.set(k, new Array(bucketCount).fill(0));
+    return m.get(k);
+  };
+
+  const resolveAbility = ev => {
+    const id = Number(ev?.ability_id || 0);
+    if (id > 0 && byID.has(id)) return byID.get(id);
+    const name = String(ev?.name || '').trim().toLowerCase();
+    if (name && byName.has(name)) return byName.get(name);
+    return { ability_id: id || 0, name: String(ev?.name || ''), skill: 'Unknown' };
+  };
+
+  const addEventDamageToSeries = (arr, dtSec, model) => {
+    const castIdx = Math.floor(dtSec / bucketSec);
+    for (const dp of (model.directParts || [])) {
+      if (castIdx >= 0 && castIdx < bucketCount) arr[castIdx] += Number(dp.damage || 0);
+    }
+    for (const dot of (model.dotParts || [])) {
+      const dotPerSec = Number(dot.damage || 0) / Number(dot.seconds || 1);
+      const dotEnd = dtSec + Number(dot.seconds || 0);
+      const startB = Math.max(0, Math.floor(dtSec / bucketSec));
+      const endB = Math.min(bucketCount - 1, Math.floor(dotEnd / bucketSec));
+      for (let b = startB; b <= endB; b++) {
+        const bStart = b * bucketSec;
+        const bEnd = bStart + bucketSec;
+        const overlap = Math.max(0, Math.min(dotEnd, bEnd) - Math.max(dtSec, bStart));
+        if (overlap > 0) arr[b] += dotPerSec * overlap;
+      }
+    }
+  };
+
+  for (const ev of uses) {
+    const t = new Date(ev?.time).getTime();
+    if (!Number.isFinite(t)) continue;
+    const dtSec = Math.floor((t - startMs) / 1000);
+    if (dtSec < 0) continue;
+
+    const a = resolveAbility(ev);
+    const model = getAbilityDamageModel(a);
+    const abilityName = String(a?.name || ev?.name || `Ability ${a?.ability_id || ''}`).trim() || 'Unknown';
+
+    addEventDamageToSeries(ensure(byAbility, abilityName), dtSec, model);
+    addEventDamageToSeries(ensure(byAbilityTime, abilityName), dtSec, model);
+
+    // Damage type series (acknowledges custom direct/dot parts + armor/health target).
+    const castIdx = Math.floor(dtSec / bucketSec);
+    for (const dp of (model.directParts || [])) {
+      const t = String(dp?.element || a?.damage_type || 'Unknown').trim() || 'Unknown';
+      const target = normalizeTargetKind(dp?.target || 'health');
+      const key = `${t} (${target})`;
+      if (castIdx >= 0 && castIdx < bucketCount) ensure(byDamageType, key)[castIdx] += Number(dp.damage || 0);
+    }
+    for (const dot of (model.dotParts || [])) {
+      const t = String(dot?.element || 'Unknown').trim() || 'Unknown';
+      const target = normalizeTargetKind(dot?.target || 'health');
+      const key = `${t} (${target})`;
+      const arr = ensure(byDamageType, key);
+      const dotPerSec = Number(dot.damage || 0) / Number(dot.seconds || 1);
+      const dotEnd = dtSec + Number(dot.seconds || 0);
+      const startB = Math.max(0, Math.floor(dtSec / bucketSec));
+      const endB = Math.min(bucketCount - 1, Math.floor(dotEnd / bucketSec));
+      for (let b = startB; b <= endB; b++) {
+        const bStart = b * bucketSec;
+        const bEnd = bStart + bucketSec;
+        const overlap = Math.max(0, Math.min(dotEnd, bEnd) - Math.max(dtSec, bStart));
+        if (overlap > 0) arr[b] += dotPerSec * overlap;
+      }
+    }
+  }
+
+  const toSeries = m => [...m.entries()].map(([name, values]) => ({ name, values }));
+  return {
+    durationSec,
+    bucketSec,
+    bucketCount,
+    abilitySeries: toSeries(byAbility),
+    abilityTimeSeries: toSeries(byAbilityTime),
+    damageTypeSeries: toSeries(byDamageType),
+  };
+}
+
+function renderMultiLineDamageChart(canvasId, series, durationSec, options = {}) {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const w = rect.width;
+  const h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#1e2128';
+  ctx.fillRect(0, 0, w, h);
+
+  if (!series || series.length === 0) {
+    ctx.fillStyle = '#7a7f8a';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('No chart data yet', w / 2, h / 2);
+    return;
+  }
+
+  const pad = { t: 12, r: 12, b: 24, l: 42 };
+  const chartW = Math.max(10, w - pad.l - pad.r);
+  const chartH = Math.max(10, h - pad.t - pad.b);
+  const len = Math.max(...series.map(s => s.values.length), 0);
+  const maxYRaw = Math.max(0, ...series.flatMap(s => s.values));
+  const maxY = Math.max(1, maxYRaw * 1.1);
+
+  ctx.strokeStyle = '#2a2f39';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const gy = pad.t + (chartH * i) / 4;
+    ctx.beginPath();
+    ctx.moveTo(pad.l, gy);
+    ctx.lineTo(pad.l + chartW, gy);
+    ctx.stroke();
+  }
+
+  const xAt = i => pad.l + (i / Math.max(1, len - 1)) * chartW;
+  const yAt = v => pad.t + chartH - (v / maxY) * chartH;
+
+  const palette = ['#5b93ff', '#2ecc71', '#f1c40f', '#e67e22', '#9b59b6', '#e74c3c', '#1abc9c', '#95a5a6', '#f39c12', '#8e44ad', '#16a085', '#3498db'];
+  series.forEach((s, idx) => {
+    const vals = s.values;
+    if (!vals || vals.length === 0) return;
+    ctx.strokeStyle = palette[idx % palette.length];
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(xAt(0), yAt(vals[0] || 0));
+    for (let i = 1; i < vals.length; i++) ctx.lineTo(xAt(i), yAt(vals[i] || 0));
+    ctx.stroke();
+  });
+
+  const fmtT = sec => {
+    const ss = Math.max(0, Math.floor(sec));
+    const m = Math.floor(ss / 60);
+    const r = ss % 60;
+    return `${m}:${String(r).padStart(2, '0')}`;
+  };
+
+  ctx.fillStyle = '#9aa3b2';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('0', 4, pad.t + chartH + 1);
+  ctx.fillText(maxY.toFixed(0), 4, pad.t + 9);
+  ctx.textAlign = 'left';
+  ctx.fillText(fmtT(0), pad.l, h - 6);
+  ctx.textAlign = 'center';
+  ctx.fillText(fmtT(durationSec / 2), pad.l + chartW / 2, h - 6);
+  ctx.textAlign = 'right';
+  ctx.fillText(fmtT(durationSec), pad.l + chartW, h - 6);
+
+  const legendEl = options.legendId ? $(options.legendId) : null;
+  if (legendEl) {
+    legendEl.innerHTML = series.map((s, idx) => `<span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;margin-bottom:4px"><span style="width:10px;height:2px;background:${palette[idx % palette.length]};display:inline-block"></span>${escapeHtml(s.name)}</span>`).join('');
+  }
+}
+
+function renderCombatAbilityAccumChart(canvasId, legendId, sessionSnapshot, combatData) {
+  const built = buildCombatTimelineSeries(sessionSnapshot, combatData);
+  if (!built) {
+    renderMultiLineDamageChart(canvasId, [], 0, { legendId });
+    return;
+  }
+  const top = [...built.abilitySeries]
+    .map(s => ({ ...s, score: s.values[s.values.length - 1] || 0 }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+    .map(s => {
+      let acc = 0;
+      const vals = s.values.map(v => (acc += v));
+      return { name: s.name, values: vals };
+    });
+  renderMultiLineDamageChart(canvasId, top, built.durationSec, { legendId });
+}
+
+function renderCombatSkillTimeChart(canvasId, legendId, sessionSnapshot, combatData) {
+  const built = buildCombatTimelineSeries(sessionSnapshot, combatData);
+  if (!built) {
+    renderMultiLineDamageChart(canvasId, [], 0, { legendId });
+    return;
+  }
+  const top = [...built.abilityTimeSeries]
+    .map(s => ({ ...s, score: s.values.reduce((a, b) => a + b, 0) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+    .map(s => ({ name: s.name, values: s.values }));
+  renderMultiLineDamageChart(canvasId, top, built.durationSec, { legendId });
+}
+
+function renderCombatDamageTypeTimeChart(canvasId, legendId, sessionSnapshot, combatData) {
+  const built = buildCombatTimelineSeries(sessionSnapshot, combatData);
+  if (!built) {
+    renderMultiLineDamageChart(canvasId, [], 0, { legendId });
+    return;
+  }
+  const top = [...(built.damageTypeSeries || [])]
+    .map(s => ({ ...s, score: s.values.reduce((a, b) => a + b, 0) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+    .map(s => ({ name: s.name, values: s.values }));
+  renderMultiLineDamageChart(canvasId, top, built.durationSec, { legendId });
 }
 
 // Widget settings
@@ -1157,48 +1672,216 @@ async function renderCombatView() {
   state.combatData = data;
   $('#combat-count').textContent = `${data.length} ability type${data.length !== 1 ? 's' : ''}`;
 
-  // DPS stat cards
-  const totalDPS = data.reduce((s, a) => s + (a.est_dps || 0), 0);
-  const totalUses = data.reduce((s, a) => s + a.uses, 0);
-  const totalHits = data.reduce((s, a) => s + (a.hits || 0), 0);
+  const enriched = data.map(a => {
+    const model = getAbilityDamageModel(a);
+    const uses = Number(a.uses || 0);
+    const estDamagePerCast = model.castTotal;
+    const estHealthPerCast = model.castHealth;
+    const estArmorPerCast = model.castArmor;
+    const estDamageAdjusted = uses * estDamagePerCast;
+    return {
+      ...a,
+      __model: model,
+      __estDamagePerCast: estDamagePerCast,
+      __estHealthPerCast: estHealthPerCast,
+      __estArmorPerCast: estArmorPerCast,
+      __estDamageAdjusted: estDamageAdjusted,
+    };
+  });
+
+  // Combat stat cards
+  const totalDmg = enriched.reduce((s, a) => s + (a.__estDamageAdjusted || 0), 0);
+  const totalUses = enriched.reduce((s, a) => s + (a.uses || 0), 0);
+  const totalEvades = enriched.reduce((s, a) => s + (a.evades || 0), 0);
   const statsEl = $('#combat-stats');
   if (statsEl) {
     statsEl.innerHTML = `
-      <div style="flex:1;min-width:120px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
+      <div style="flex:1;min-width:140px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
         <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Abilities Used</div>
         <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:2px">${totalUses}</div>
       </div>
-      <div style="flex:1;min-width:120px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Outgoing Hits</div>
-        <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:2px">${totalHits}</div>
+      <div style="flex:1;min-width:140px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Evaded</div>
+        <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:2px">${totalEvades}</div>
       </div>
-      <div style="flex:1;min-width:120px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Est. DPS</div>
-        <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:2px">${totalDPS.toFixed(1)}</div>
+      <div style="flex:1;min-width:140px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Estimated Damage</div>
+        <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:2px">${totalDmg.toFixed(0)}</div>
+      </div>
+      <div style="flex-basis:100%;margin-top:8px;padding:8px 10px;border:1px solid var(--sell-vendor);background:color-mix(in srgb, var(--sell-vendor) 12%, transparent);color:var(--text);border-radius:6px;font-size:12px;font-weight:600;line-height:1.35">
+        ⚠ Estimated values only (no VIP combat log direct damage feed).
       </div>`;
   }
 
-  // Per-ability table
-  let html = '<table style="width:100%;border-collapse:collapse"><thead><tr>' +
+  // Charts + per-ability table
+  let html = '<div style="margin-bottom:10px;padding:10px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px">' +
+    '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Accumulated damage by attack (line per ability)</div>' +
+    '<canvas id="combat-accum-attack-chart" height="240" style="width:100%;border-radius:6px;background:var(--row)"></canvas>' +
+    '<div id="combat-accum-attack-legend" style="margin-top:6px;font-size:11px;color:var(--muted);line-height:1.4"></div>' +
+    '</div>' +
+    '<div style="margin-bottom:10px;padding:10px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px">' +
+    '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Damage over time by attack (line per ability)</div>' +
+    '<canvas id="combat-skill-time-chart" height="240" style="width:100%;border-radius:6px;background:var(--row)"></canvas>' +
+    '<div id="combat-skill-time-legend" style="margin-top:6px;font-size:11px;color:var(--muted);line-height:1.4"></div>' +
+    '</div>' +
+    '<div style="margin-bottom:10px;padding:10px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px">' +
+    '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Damage over time by damage type (custom DoTs included)</div>' +
+    '<canvas id="combat-dmgtype-time-chart" height="220" style="width:100%;border-radius:6px;background:var(--row)"></canvas>' +
+    '<div id="combat-dmgtype-time-legend" style="margin-top:6px;font-size:11px;color:var(--muted);line-height:1.4"></div>' +
+    '</div>' +
+    '<table style="width:100%;border-collapse:collapse"><thead><tr>' +
     '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">Ability</th>' +
     '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Uses</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Hits</th>' +
     '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Base DMG</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Est DPS</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Estimated DMG/Cast</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">HP/Cast</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Armor/Cast</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Manual HP DMG</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Manual Armor DMG</th>' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--border)">Manual Direct Parts</th>' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--border)">Manual DoTs (total/seconds)</th>' +
     '<th style="padding:6px 8px;border-bottom:1px solid var(--border)">Type</th>' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--border)">Override</th>' +
     '</tr></thead><tbody>';
-  for (const a of data) {
+  for (const a of enriched) {
+    const key = combatAbilityKey(a);
+    const model = a.__model;
     html += `<tr>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${escapeHtml(a.name)}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${escapeHtml(a.name || (a.ability_id ? `Ability ${a.ability_id}` : 'Unknown'))}</td>
       <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${a.uses}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${a.hits || '-'}</td>
       <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${a.base_damage ? a.base_damage.toFixed(0) : '-'}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${a.est_dps ? a.est_dps.toFixed(1) : '-'}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estDamagePerCast) ? a.__estDamagePerCast.toFixed(0) : '-'}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estHealthPerCast) ? a.__estHealthPerCast.toFixed(0) : '-'}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estArmorPerCast) ? a.__estArmorPerCast.toFixed(0) : '-'}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right"><input class="ov-direct" type="number" min="0" step="1" value="${(model.directParts.filter(p => p.target === 'health').reduce((s, p) => s + Number(p.damage || 0), 0)).toFixed(0)}" style="width:74px;background:var(--row);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px"></td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right"><input class="ov-direct-armor" type="number" min="0" step="1" value="${(model.directParts.filter(p => p.target === 'armor').reduce((s, p) => s + Number(p.damage || 0), 0)).toFixed(0)}" style="width:82px;background:var(--row);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px"></td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row)"><input class="ov-directparts" type="text" value="${escapeHtml(model.directPartsSpec || '')}" placeholder="Poison:381, Fire:40@armor" title="Format: Element:Damage[@health|@armor], comma-separated" style="width:240px;max-width:100%;background:var(--row);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px"></td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row)"><input class="ov-dotparts" type="text" value="${escapeHtml(model.dotPartsSpec || '')}" placeholder="Poison:381/10, Fire:80/10@armor" title="Damage is TOTAL over duration. Format: Element:Damage/Seconds[@health|@armor]" style="width:260px;max-width:100%;background:var(--row);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px"></td>
       <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${a.skill || a.damage_type ? escapeHtml(a.skill || '') + (a.damage_type ? ' · ' + escapeHtml(a.damage_type) : '') : ''}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);white-space:nowrap">
+        <button class="btn ghost" data-key="${escapeHtml(key)}" onclick="saveCombatOverrideFromRow(this)">Save</button>
+        <button class="btn ghost" data-key="${escapeHtml(key)}" onclick="resetCombatOverrideFromRow(this)">Reset</button>
+      </td>
     </tr>`;
   }
   html += '</tbody></table>';
+
+  // Raw debug data (to validate DPS/base damage mapping)
+  const rawUses = Array.isArray(s?.ability_uses) ? s.ability_uses : [];
+  const rawHits = Array.isArray(s?.combat_hits) ? s.combat_hits : [];
+  const rawEvades = Array.isArray(s?.combat_evades) ? s.combat_evades : [];
+
+  const combatRows = [...enriched]
+    .sort((a, b) => (b.__estDamageAdjusted || 0) - (a.__estDamageAdjusted || 0))
+    .slice(0, 60)
+    .map(a => `<tr>
+      <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(a.name || '')}</td>
+      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${a.ability_id || '-'}</td>
+      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${a.uses || 0}</td>
+      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${a.hits || 0}</td>
+      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${a.base_damage ? Number(a.base_damage).toFixed(2) : '-'}</td>
+      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estDamagePerCast) ? Number(a.__estDamagePerCast).toFixed(2) : '-'}</td>
+      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estHealthPerCast) ? Number(a.__estHealthPerCast).toFixed(2) : '-'}</td>
+      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estArmorPerCast) ? Number(a.__estArmorPerCast).toFixed(2) : '-'}</td>
+      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${a.evades || 0}</td>
+      <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(a.skill || '')}</td>
+      <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(a.damage_type || '')}</td>
+    </tr>`)
+    .join('');
+
+  const latestUses = rawUses.slice(-120).reverse().map(ev => `<tr>
+    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(relTime(ev.time) || '')}</td>
+    <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${ev.ability_id || '-'}</td>
+    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(ev.name || '')}</td>
+  </tr>`).join('');
+
+  const latestHits = rawHits.slice(-120).reverse().map(ev => `<tr>
+    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(relTime(ev.time) || '')}</td>
+    <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${ev.ability_id || '-'}</td>
+    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(ev.ability || '')}</td>
+  </tr>`).join('');
+
+  const latestEvades = rawEvades.slice(-120).reverse().map(ev => `<tr>
+    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(relTime(ev.time) || '')}</td>
+    <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${ev.ability_id || '-'}</td>
+    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(ev.ability || '')}</td>
+  </tr>`).join('');
+
+  html += `
+    <details style="margin-top:12px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:8px">
+      <summary style="cursor:pointer;font-weight:600">Raw combat data (debug)</summary>
+      <div style="font-size:12px;color:var(--muted);margin:6px 0 10px 0">
+        Uses events: <b>${rawUses.length}</b> · Hit events: <b>${rawHits.length}</b> · Evaded events: <b>${rawEvades.length}</b> · Ability aggregates: <b>${data.length}</b>
+      </div>
+
+      <div style="overflow:auto;max-height:260px;border:1px solid var(--border);border-radius:6px;margin-bottom:10px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr>
+            <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Ability</th>
+            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">ID</th>
+            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Uses</th>
+            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Hits (ignored)</th>
+            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Base DMG</th>
+            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Estimated DMG/Cast</th>
+            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">HP/Cast</th>
+            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Armor/Cast</th>
+            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Evades</th>
+            <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Skill</th>
+            <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Type</th>
+          </tr></thead>
+          <tbody>${combatRows || '<tr><td colspan="11" style="padding:8px;color:var(--muted)">No aggregate data</td></tr>'}</tbody>
+        </table>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+        <div style="min-width:0">
+          <div style="font-size:12px;color:var(--muted);margin:0 0 6px 0">Latest ability uses (raw)</div>
+          <div style="overflow:auto;max-height:220px;border:1px solid var(--border);border-radius:6px">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr>
+                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Time</th>
+                <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">ID</th>
+                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Ability</th>
+              </tr></thead>
+              <tbody>${latestUses || '<tr><td colspan="3" style="padding:8px;color:var(--muted)">No use events</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style="min-width:0">
+          <div style="font-size:12px;color:var(--muted);margin:0 0 6px 0">Latest hit events (raw)</div>
+          <div style="overflow:auto;max-height:220px;border:1px solid var(--border);border-radius:6px">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr>
+                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Time</th>
+                <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">ID</th>
+                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Ability</th>
+              </tr></thead>
+              <tbody>${latestHits || '<tr><td colspan="3" style="padding:8px;color:var(--muted)">No hit events</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style="min-width:0">
+          <div style="font-size:12px;color:var(--muted);margin:0 0 6px 0">Latest evaded events (raw)</div>
+          <div style="overflow:auto;max-height:220px;border:1px solid var(--border);border-radius:6px">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr>
+                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Time</th>
+                <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">ID</th>
+                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Ability</th>
+              </tr></thead>
+              <tbody>${latestEvades || '<tr><td colspan="3" style="padding:8px;color:var(--muted)">No evaded events</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </details>`;
+
   container.innerHTML = html;
+  renderCombatAbilityAccumChart('#combat-accum-attack-chart', '#combat-accum-attack-legend', s, enriched);
+  renderCombatSkillTimeChart('#combat-skill-time-chart', '#combat-skill-time-legend', s, enriched);
+  renderCombatDamageTypeTimeChart('#combat-dmgtype-time-chart', '#combat-dmgtype-time-legend', s, enriched);
 }
 
 // Zones view — show zone history from session snapshot
@@ -1217,23 +1900,32 @@ async function renderDropRatesView() {
   const search = ($('#drop-search')?.value || '').toLowerCase();
 
   const filtered = search ? data.filter(d => d.name.toLowerCase().includes(search)) : data;
-  filtered.sort((a, b) => b.total_count - a.total_count);
-  $('#drop-count').textContent = `${filtered.length} item${filtered.length !== 1 ? 's' : ''} (${data.length} unique)`;
+  filtered.sort((a, b) => (b.now_chance || 0) - (a.now_chance || 0));
+
+  const latestKillMob = Array.isArray(state.session?.kills) && state.session.kills.length
+    ? state.session.kills[state.session.kills.length - 1].mob
+    : '';
+  const dungeonCtx = String(state.session?.dungeon || '').trim();
+  const cleanedDungeonCtx = ['unnamed', 'unknown', 'test dungeon'].includes(dungeonCtx.toLowerCase()) ? '' : dungeonCtx;
+  const currentCtx = latestKillMob || cleanedDungeonCtx || 'current context';
+  $('#drop-count').textContent = `${filtered.length} item${filtered.length !== 1 ? 's' : ''} (${data.length} unique) · chance context: ${currentCtx}`;
 
   let html = '<table style="width:100%;border-collapse:collapse"><thead><tr>' +
     '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">Item</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Total</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Sessions</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Avg/Session</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Avg Value</th>' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--border)">Drops From</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Chance Now</th>' +
+    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Overall Chance</th>' +
     '</tr></thead><tbody>';
   for (const d of filtered.slice(0, 500)) {
+    const src = (Array.isArray(d.sources) && d.sources.length > 0) ? d.sources[0] : null;
+    const srcText = src
+      ? `${src.name} (${(src.chance || 0).toFixed(1)}%)`
+      : (d.primary_source || 'Unknown');
     html += `<tr>
       <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${escapeHtml(d.name)}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${d.total_count}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${d.session_count}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${d.avg_per_session.toFixed(1)}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${d.avg_value ? d.avg_value.toFixed(0) + 'g' : '-'}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${escapeHtml(srcText)}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${(d.now_chance || 0).toFixed(1)}%</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${(d.overall_chance || 0).toFixed(1)}%</td>
     </tr>`;
   }
   html += '</tbody></table>';

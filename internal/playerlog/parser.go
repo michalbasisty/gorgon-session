@@ -27,6 +27,7 @@ const (
 	KindSkill         Kind = "skill"
 	KindUseAbility    Kind = "use_ability"
 	KindOnAttackHitMe Kind = "on_attack_hit_me"
+	KindCorpseSearch  Kind = "corpse_search"
 )
 
 // Event is one parsed line from Player.log.
@@ -38,6 +39,8 @@ type Event struct {
 	Value       int    // skill tick value (always 0 for [WW] but future-proof)
 	AbilityName string // ability name (from UseAbility / OnAttackHitMe)
 	AbilityID   int    // ability ID
+	Evaded      bool   // for OnAttackHitMe lines that include "Evaded = ..."
+	Mob         string // corpse/kill related mob name
 }
 
 var (
@@ -47,8 +50,17 @@ var (
 	skillRe = regexp.MustCompile(`\[Status\]\s+\[WW\]\s+Skill '(.+?)' gained (\d+\.?\d*)`)
 	// UseAbility(Ability(Name,ID))
 	useAbilityRe = regexp.MustCompile(`UseAbility\(Ability\(([^,]+),(\d+)\)\)`)
+	// entity_XXXXX: OnAttackHitMe(Ability(Name,ID)). Evaded = True|False
+	// Anchored at line start to avoid matching incoming lines like:
+	// "localPlayer - entity_123: OnAttackHitMe(...)"
+	onAttackHitMeAbilityEvadedRe = regexp.MustCompile(`^entity_\d+:\s+OnAttackHitMe\(Ability\(([^,]+),(\d+)\)\)\.\s*Evaded\s*=\s*(True|False)`)
 	// entity_XXXXX: OnAttackHitMe(Ability(Name,ID))
-	onAttackHitMeRe = regexp.MustCompile(`entity_\d+: OnAttackHitMe\(Ability\(([^,]+),(\d+)\)\)`)
+	onAttackHitMeRe = regexp.MustCompile(`^entity_\d+:\s+OnAttackHitMe\(Ability\(([^,]+),(\d+)\)\)`)
+	// entity_XXXXX: OnAttackHitMe(Name). Evaded = False
+	// Also anchored for the same reason.
+	onAttackHitMeNamedRe = regexp.MustCompile(`^entity_\d+:\s+OnAttackHitMe\(([^\)]+)\)\.\s*Evaded\s*=\s*(True|False)`)
+	// LocalPlayer: ProcessTalkScreen(..., "Search Corpse of X", ...)
+	corpseSearchRe = regexp.MustCompile(`ProcessTalkScreen\([^\)]*"Search Corpse of (.+?)"`)
 )
 
 // Parser converts Player.log lines into typed events.
@@ -68,8 +80,8 @@ func (p *Parser) ParseLine(line string) *Event {
 
 	// Strip leading [HH:MM:SS] prefix if present.
 	body := line
-	if len(body) > 9 && body[0] == '[' && body[3] == ':' && body[6] == ':' {
-		body = strings.TrimSpace(body[9:])
+	if len(body) > 10 && body[0] == '[' && body[3] == ':' && body[6] == ':' && body[9] == ']' {
+		body = strings.TrimSpace(body[10:])
 	}
 
 	// Login
@@ -98,10 +110,40 @@ func (p *Parser) ParseLine(line string) *Event {
 		return &Event{Raw: line, Kind: KindUseAbility, AbilityName: strings.TrimSpace(m[1]), AbilityID: id}
 	}
 
-	// OnAttackHitMe
+	// OnAttackHitMe (with embedded Ability(Name,ID) + evaded flag)
+	if m := onAttackHitMeAbilityEvadedRe.FindStringSubmatch(body); m != nil {
+		id, _ := strconv.Atoi(m[2])
+		return &Event{
+			Raw:         line,
+			Kind:        KindOnAttackHitMe,
+			AbilityName: strings.TrimSpace(m[1]),
+			AbilityID:   id,
+			Evaded:      strings.EqualFold(strings.TrimSpace(m[3]), "True"),
+		}
+	}
+
+	// OnAttackHitMe (with embedded Ability(Name,ID))
 	if m := onAttackHitMeRe.FindStringSubmatch(body); m != nil {
 		id, _ := strconv.Atoi(m[2])
 		return &Event{Raw: line, Kind: KindOnAttackHitMe, AbilityName: strings.TrimSpace(m[1]), AbilityID: id}
+	}
+
+	// OnAttackHitMe (name-only form seen in newer logs)
+	if m := onAttackHitMeNamedRe.FindStringSubmatch(body); m != nil {
+		return &Event{
+			Raw:         line,
+			Kind:        KindOnAttackHitMe,
+			AbilityName: strings.TrimSpace(m[1]),
+			Evaded:      strings.EqualFold(strings.TrimSpace(m[2]), "True"),
+		}
+	}
+
+	// Corpse search line can act as a strong loot-source signal.
+	if m := corpseSearchRe.FindStringSubmatch(body); m != nil {
+		mob := strings.TrimSpace(m[1])
+		if mob != "" {
+			return &Event{Raw: line, Kind: KindCorpseSearch, Mob: mob}
+		}
 	}
 
 	return nil
