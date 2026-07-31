@@ -2,7 +2,12 @@ bin/
 dist/
 *.exe
 config.yaml
+config.json
 cache/
+reports/
+backups/
+traders*.json
+price-history.json
 .sessions/
 .slim/deepwork/
 .perch/

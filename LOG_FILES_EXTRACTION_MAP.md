@@ -41,10 +41,11 @@ This file maps **what the app currently extracts from game `.log` files**, and w
 | Event kind | Example line pattern | Extracted fields | Used in app |
 |---|---|---|---|
 | `login` | `Welcome to Project Gorgon!` | (event only) | Hook for future auto-session behavior |
-| `zone` | `You have entered <zone>.` | `zone` | Current zone + zone history |
+| `zone` | Primary: `Downloading Map [...] for area <zone> runtime key` — Legacy fallback: `You have entered <zone>.` | `zone` | Current zone + zone history |
 | `skill` | `[Status] [WW] Skill '<name>' gained <value>` | `skill`, `value` (int-cast) | Reserved for granular skill tracking |
 | `use_ability` | `UseAbility(Ability(<name>,<id>))` | `ability_name`, `ability_id` | Combat ability uses |
-| `on_attack_hit_me` | `entity_<id>: OnAttackHitMe(Ability(<name>,<id>))` | `ability_name`, `ability_id` | Combat outgoing hit count |
+| `on_attack_hit_me` | `entity_<id>: OnAttackHitMe(Ability(<name>,<id>))` — also name-only form: `entity_<id>: OnAttackHitMe(<name>). Evaded = <True\|False>` | `ability_name`, `ability_id` (0 for the name-only form), `evaded` | Combat outgoing hit count |
+| `corpse_search` | `ProcessTalkScreen(..., "Search Corpse of <mob>", ...)` | `mob` | Loot-source signal (strong hint that loot follows) |
 
 ---
 
@@ -53,7 +54,8 @@ This file maps **what the app currently extracts from game `.log` files**, and w
 From log events, the app builds:
 - `uses` per ability
 - `hits` per ability
-- `ability_id`
+- `ability_id` (may be `0` when the hit line is the name-only form)
+- `evaded` flags from hit lines
 
 Then enriches with CDN ability data:
 - `skill`

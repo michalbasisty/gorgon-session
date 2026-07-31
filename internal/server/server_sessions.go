@@ -54,7 +54,10 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 
 // handleStop: POST stops the active session and writes a report.
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
-	if err := s.Sess.Stop(s.Cfg.ReportDir); err != nil {
+	s.cfgMu.RLock()
+	reportDir := s.Cfg.ReportDir
+	s.cfgMu.RUnlock()
+	if err := s.Sess.Stop(reportDir); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -217,7 +220,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) buildSessions() []SessionSummary {
 	sessions := []SessionSummary{}
+	s.cfgMu.RLock()
 	reportDir := s.Cfg.ReportDir
+	s.cfgMu.RUnlock()
 
 	if reportDir == "" {
 		return sessions
@@ -310,7 +315,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.cfgMu.RLock()
 	reportDir := s.Cfg.ReportDir
+	s.cfgMu.RUnlock()
 	if reportDir == "" {
 		http.Error(w, "report directory not configured", http.StatusInternalServerError)
 		return
@@ -394,7 +401,9 @@ func (s *Server) handleSessionExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.cfgMu.RLock()
 	reportDir := s.Cfg.ReportDir
+	s.cfgMu.RUnlock()
 	if reportDir == "" {
 		http.Error(w, "report directory not configured", http.StatusInternalServerError)
 		return
@@ -435,4 +444,145 @@ func (s *Server) handleSessionExport(w http.ResponseWriter, r *http.Request) {
 			strconv.FormatFloat(loot.Decision.PlayerPrice, 'f', -1, 64),
 		})
 	}
+}
+
+// handleNotesExport: GET text/plain dump of every loot note across sessions,
+// grouped under a session date/time header per report.
+func (s *Server) handleNotesExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var b strings.Builder
+	s.cfgMu.RLock()
+	reportDir := s.Cfg.ReportDir
+	s.cfgMu.RUnlock()
+	if reportDir != "" {
+		files, err := os.ReadDir(reportDir)
+		if err == nil {
+			for _, file := range files {
+				if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
+					continue
+				}
+				snap, ok := s.sessionSnapshot(strings.TrimSuffix(file.Name(), ".json"), w)
+				if !ok {
+					// skip unreadable reports rather than failing the whole dump
+					continue
+				}
+				header := fmt.Sprintf("=== %s (%s) ===\n", strings.TrimSuffix(file.Name(), ".json"), snap.StartedAt.Format(time.RFC3339))
+				wrote := false
+				for _, loot := range snap.Loot {
+					if strings.TrimSpace(loot.Note) == "" {
+						continue
+					}
+					if !wrote {
+						b.WriteString(header)
+						wrote = true
+					}
+					b.WriteString(fmt.Sprintf("%s: %s\n", loot.Name, loot.Note))
+				}
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(b.String()))
+}
+
+// CompareSummary is one side of a session comparison.
+type CompareSummary struct {
+	ID              string         `json:"id"`
+	StartedAt       time.Time      `json:"started_at"`
+	DurationSeconds float64        `json:"duration_seconds"`
+	TotalLootValue  float64        `json:"total_loot_value"`
+	Kills           int            `json:"kills"`
+	TotalDamage     float64        `json:"total_damage"`
+	XP              int            `json:"xp"`
+	AbilityCasts    map[string]int `json:"ability_casts"`
+}
+
+func (s *Server) summarizeSnapshot(id string, snap session.Snapshot) CompareSummary {
+	sum := CompareSummary{ID: id, StartedAt: snap.StartedAt, AbilityCasts: map[string]int{}}
+	if !snap.StartedAt.IsZero() && !snap.EndedAt.IsZero() {
+		sum.DurationSeconds = snap.EndedAt.Sub(snap.StartedAt).Seconds()
+	}
+	for _, loot := range snap.Loot {
+		sum.TotalLootValue += loot.Valor * float64(loot.Count)
+	}
+	sum.Kills = len(snap.Kills)
+	for _, xp := range snap.XPGains {
+		sum.XP += xp.Amount
+	}
+	for name, n := range snap.AbilityCounts {
+		if _, ok := s.abilityIDByNameKey[strings.ToLower(strings.TrimSpace(name))]; ok {
+			continue // counted via AbilityIDCounts below
+		}
+		sum.AbilityCasts[name] += n
+	}
+	for id, n := range snap.AbilityIDCounts {
+		name := ""
+		if a, ok := s.abilityByID[id]; ok {
+			name = a.Name
+			if name == "" {
+				name = a.InternalName
+			}
+		}
+		if name == "" {
+			name = fmt.Sprintf("ability_%d", id)
+		}
+		sum.AbilityCasts[name] += n
+	}
+	sum.TotalDamage = s.estimatedTotalDamage(snap)
+	return sum
+}
+
+// estimatedTotalDamage sums CDN base damage x casts per ability (same estimate
+// handleCombat reports); no per-hit damage is stored in the session model.
+func (s *Server) estimatedTotalDamage(snap session.Snapshot) float64 {
+	total := 0.0
+	for id, uses := range snap.AbilityIDCounts {
+		if a, ok := s.abilityByID[id]; ok {
+			total += a.BaseDamage() * float64(uses)
+		}
+	}
+	for name, uses := range snap.AbilityCounts {
+		if _, ok := s.abilityIDByNameKey[strings.ToLower(strings.TrimSpace(name))]; ok {
+			continue
+		}
+		if a, ok := s.abilityByNameKey[strings.ToLower(strings.TrimSpace(name))]; ok {
+			total += a.BaseDamage() * float64(uses)
+		}
+	}
+	return total
+}
+
+// handleSessionsCompare: GET ?a=ID&b=ID compares two past sessions.
+func (s *Server) handleSessionsCompare(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	aID, bID := r.URL.Query().Get("a"), r.URL.Query().Get("b")
+	if aID == "" || bID == "" {
+		http.Error(w, "a and b session IDs required", http.StatusBadRequest)
+		return
+	}
+	snapA, ok := s.sessionSnapshot(aID, w)
+	if !ok {
+		return
+	}
+	snapB, ok := s.sessionSnapshot(bID, w)
+	if !ok {
+		return
+	}
+	a := s.summarizeSnapshot(aID, snapA)
+	b := s.summarizeSnapshot(bID, snapB)
+	writeJSON(w, map[string]any{
+		"a": a, "b": b,
+		"diff": map[string]float64{
+			"loot_value":   a.TotalLootValue - b.TotalLootValue,
+			"kills":        float64(a.Kills - b.Kills),
+			"total_damage": a.TotalDamage - b.TotalDamage,
+			"xp":           float64(a.XP - b.XP),
+		},
+	})
 }

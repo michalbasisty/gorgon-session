@@ -51,6 +51,31 @@ type Config struct {
 	// PlayerLogPath is the path to Player.log for skill ticks, zone
 	// transitions, and login detection. Empty = auto-detect.
 	PlayerLogPath string `json:"player_log_path"`
+	// Overlay configures the native always-on-top HUD window (position,
+	// opacity, click-through, theme). Applied by the overlay process at startup.
+	Overlay OverlaySettings `json:"overlay"`
+}
+
+// OverlaySettings configures the native always-on-top HUD window. Values are
+// read by the overlay process from /api/config when it starts.
+type OverlaySettings struct {
+	// Opacity is normal-mode window opacity, percent 30..100 (default 98).
+	Opacity int `json:"opacity"`
+	// ClickThroughOpacity is click-through-mode window opacity, percent
+	// 30..100 (default 78).
+	ClickThroughOpacity int `json:"click_through_opacity"`
+	// ClickThroughByDefault starts the overlay in click-through mode
+	// (default false).
+	ClickThroughByDefault bool `json:"click_through_by_default"`
+	// Position is the screen corner the window docks to:
+	// "bottom-right"|"bottom-left"|"top-right"|"top-left" (default "bottom-right").
+	Position string `json:"position"`
+	// Theme is "dark"|"light" for the overlay web UI (default "dark").
+	Theme string `json:"theme"`
+	// AccentColor is a hex color like "#5b93ff" for the overlay web UI
+	// (defaults to the app's CSS --accent so the overlay matches out of the box).
+	// (default matches the app accent).
+	AccentColor string `json:"accent_color"`
 }
 
 // Default returns the platform-appropriate default config.
@@ -63,7 +88,7 @@ func Default() Config {
 		LootRegex:             "",
 		CDNRoot:               "http://cdn.projectgorgon.com",
 		VersionFile:           "http://client.projectgorgon.com/fileversion.txt",
-		FallbackVersion:      "v480",
+		FallbackVersion:      "v481",
 		CacheDir:              filepath.Join(appDir, "cache"),
 		ReportDir:             filepath.Join(appDir, "reports"),
 		SellValueThreshold:    50,
@@ -71,6 +96,13 @@ func Default() Config {
 		NotificationThreshold: 500,
 		BackupEnabled:         true,
 		PlayerLogPath:         defaultPlayerLogPath(),
+		Overlay: OverlaySettings{
+			Opacity:             98,
+			ClickThroughOpacity: 78,
+			Position:            "bottom-right",
+			Theme:               "dark",
+			AccentColor:         "#5b93ff",
+		},
 	}
 }
 
@@ -115,16 +147,44 @@ func Load() (Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, err
 	}
-	if c.CacheDir == "" {
-		c.CacheDir = filepath.Join(filepath.Dir(p), "cache")
+	return normalizeDefaults(c, p), nil
+}
+
+// normalizeDefaults fills in fields a saved config may have left empty:
+//   - portable mode (config next to the exe) keeps cache/reports next to it
+//   - an empty player_log_path re-enables auto-detection
+//   - an empty http_addr would make ListenAndServe bind :80, so re-default it
+func normalizeDefaults(c Config, p string) Config {
+	homeDir := filepath.Dir(Default().CacheDir)
+	if filepath.Dir(p) != homeDir {
+		// portable mode: relocate data dirs next to the config file
+		if c.CacheDir == "" || c.CacheDir == filepath.Join(homeDir, "cache") {
+			c.CacheDir = filepath.Join(filepath.Dir(p), "cache")
+		}
+		if c.ReportDir == "" || c.ReportDir == filepath.Join(homeDir, "reports") {
+			c.ReportDir = filepath.Join(filepath.Dir(p), "reports")
+		}
+	} else {
+		if c.CacheDir == "" {
+			c.CacheDir = filepath.Join(filepath.Dir(p), "cache")
+		}
+		if c.ReportDir == "" {
+			c.ReportDir = filepath.Join(filepath.Dir(p), "reports")
+		}
 	}
-	if c.ReportDir == "" {
-		c.ReportDir = filepath.Join(filepath.Dir(p), "reports")
+	if c.PlayerLogPath == "" {
+		c.PlayerLogPath = defaultPlayerLogPath()
+	}
+	if c.ChatLogDir == "" {
+		c.ChatLogDir = defaultChatLogDir()
+	}
+	if c.HTTPAddr == "" {
+		c.HTTPAddr = "127.0.0.1:7777"
 	}
 	if c.PlayerPrices == nil {
 		c.PlayerPrices = map[string]float64{}
 	}
-	return c, nil
+	return c
 }
 
 // Save writes config to disk.

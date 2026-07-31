@@ -1,9 +1,12 @@
 package trader
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestEnsureAndGet(t *testing.T) {
@@ -152,6 +155,140 @@ func TestTimeUntilReset(t *testing.T) {
 	d := mgr.TimeUntilReset("TestNPC")
 	if d.Hours() < 7*24-1 {
 		t.Errorf("expected ~7d, got %v", d)
+	}
+}
+
+func TestDeleteHistoryEvent(t *testing.T) {
+	mgr := New(filepath.Join(t.TempDir(), "traders.json"))
+	// Ensure with zero remaining time anchors LastSale at exactly one cycle ago,
+	// so the next LogSale triggers a refresh event.
+	_ = mgr.Ensure("TestNPC", "TestArea", 0, 0)
+	_ = mgr.LogSale("TestNPC", 100)
+
+	events := mgr.GetRefreshHistory("")
+	if len(events) != 1 {
+		t.Fatalf("expected 1 history event, got %d", len(events))
+	}
+	if events[0].ID == "" {
+		t.Fatal("expected event to have an ID")
+	}
+
+	if err := mgr.DeleteHistoryEvent(events[0].ID); err != nil {
+		t.Fatalf("DeleteHistoryEvent failed: %v", err)
+	}
+	if got := mgr.GetRefreshHistory(""); len(got) != 0 {
+		t.Errorf("expected empty history after delete, got %d events", len(got))
+	}
+
+	if err := mgr.DeleteHistoryEvent("ev-missing"); err == nil {
+		t.Error("expected error for unknown event ID")
+	}
+
+	// Change is persisted: reload from disk.
+	mgr2 := New(mgr.filePath)
+	if err := mgr2.Load(); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	if got := mgr2.GetRefreshHistory(""); len(got) != 0 {
+		t.Errorf("expected empty history after reload, got %d", len(got))
+	}
+}
+
+func TestLoadHistoryMigratesIDs(t *testing.T) {
+	dir := t.TempDir()
+	tradersPath := filepath.Join(dir, "traders.json")
+	historyPath := filepath.Join(dir, "traders-history.json")
+
+	// History file written before the ID field existed.
+	legacy := []RefreshEvent{
+		{NPCName: "NPC1", Area: "Area1", SoldAtReset: 500, WeeklyLimit: 1000, ResetAt: time.Now().Add(-48 * time.Hour)},
+		{NPCName: "NPC2", Area: "Area2", SoldAtReset: 100, WeeklyLimit: 500, ResetAt: time.Now().Add(-24 * time.Hour)},
+	}
+	data, _ := json.MarshalIndent(legacy, "", "  ")
+	if err := os.WriteFile(historyPath, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(tradersPath)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	events := mgr.GetRefreshHistory("")
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	for i, e := range events {
+		if e.ID == "" {
+			t.Errorf("event %d missing migrated ID", i)
+		}
+	}
+
+	// File rewritten with IDs on load.
+	var reloaded []RefreshEvent
+	raw, err := os.ReadFile(historyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded) != 2 || reloaded[0].ID == "" || reloaded[1].ID == "" {
+		t.Errorf("expected persisted events with IDs, got %+v", reloaded)
+	}
+}
+
+func TestLoadKeepsPersistedLastSale(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "traders.json")
+
+	// Write a trader whose LastSale is 8 days old (app closed mid-cycle).
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	data, _ := json.MarshalIndent([]*Trader{{
+		NPCName:      "Larsen",
+		Area:         "Serbule",
+		WeeklyLimit:  10000,
+		SoldThisWeek: 7500,
+		LastSale:     old,
+		ResetDays:    7,
+		ResetHours:   0,
+	}}, "", "  ")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(path)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// The persisted anchor must survive load, not be recomputed from
+	// ResetDays/ResetHours (which would zero elapsed time and skip catchup).
+	tr := mgr.Get("Larsen")
+	if tr == nil {
+		t.Fatal("Larsen not loaded")
+	}
+	if !tr.LastSale.Equal(old) {
+		t.Errorf("LastSale was recomputed: got %v, want %v", tr.LastSale, old)
+	}
+
+	// Start runs catchupMissed: 8 days elapsed >= 7-day cycle → one refresh
+	// event backdated to the scheduled reset, counter reset.
+	ctx, cancel := context.WithCancel(context.Background())
+	mgr.Start(ctx)
+	cancel()
+
+	events := mgr.GetRefreshHistory("Larsen")
+	if len(events) != 1 {
+		t.Fatalf("expected 1 catchup event, got %d", len(events))
+	}
+	if events[0].SoldAtReset != 7500 || events[0].WeeklyLimit != 10000 {
+		t.Errorf("unexpected event payload: %+v", events[0])
+	}
+	tr = mgr.Get("Larsen")
+	if tr.SoldThisWeek != 0 {
+		t.Errorf("expected SoldThisWeek reset to 0, got %f", tr.SoldThisWeek)
+	}
+	if got := mgr.TimeUntilReset("Larsen"); got.Hours() < 6*24-1 || got.Hours() > 6*24+1 {
+		t.Errorf("expected ~6d remaining after catchup (refresh happened 1d ago), got %v", got)
 	}
 }
 

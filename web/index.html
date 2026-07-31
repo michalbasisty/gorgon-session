@@ -7,6 +7,58 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<script>
+  // Overlay mode: the native always-on-top window loads
+  // /?overlay=1&theme=<dark|light>&accent=<hex>. Must run before first paint
+  // so the compact layout never flashes in at full size.
+  const q = new URLSearchParams(location.search);
+  if (q.get('overlay') === '1') {
+    document.body.classList.add('overlay-mode');
+    document.title = 'Gorgon HUD';
+    const theme = q.get('theme');
+    if (theme === 'dark' || theme === 'light') document.body.setAttribute('data-theme', theme);
+    const accent = q.get('accent');
+    if (accent && /^#[0-9a-f]{6}$/i.test(accent)) {
+      document.body.style.setProperty('--accent', accent);
+    }
+  }
+</script>
+<!-- Split menu (overlay mode only): top bar = 6 views, bottom bar = the
+     remaining 6 views + close (7 buttons each). The gorgon-session brand
+     doubles as the Dashboard/Home button. Both bars are drag regions;
+     buttons/controls are no-drag. See-through is toggled by Ctrl+F9 / 'o'. -->
+<div id="overlay-bar" class="overlay-bar" hidden>
+  <div class="overlay-top">
+    <button type="button" id="overlay-home" class="overlay-brand" title="Home (Dashboard)">gorgon-session</button>
+    <div class="overlay-top-nav" role="tablist" aria-label="Overlay top menu">
+      <button type="button" class="nav-item overlay-nav" data-view="tracker" role="tab" tabindex="-1" aria-selected="true">Tracker</button>
+      <button type="button" class="nav-item overlay-nav" data-view="traders" role="tab" tabindex="-1" aria-selected="false">Traders</button>
+      <button type="button" class="nav-item overlay-nav" data-view="combat" role="tab" tabindex="-1" aria-selected="false">Combat</button>
+      <button type="button" class="nav-item overlay-nav" data-view="drop-rates" role="tab" tabindex="-1" aria-selected="false">Drop Rates</button>
+      <button type="button" class="nav-item overlay-nav" data-view="items" role="tab" tabindex="-1" aria-selected="false">Items</button>
+      <button type="button" class="nav-item overlay-nav" data-view="summary" role="tab" tabindex="-1" aria-selected="false">Summary</button>
+    </div>
+  </div>
+  <div class="overlay-drag" title="Drag to move"><span class="overlay-drag-grip" aria-hidden="true">⠿</span></div>
+</div>
+<div id="overlay-bottom" class="overlay-bottom" hidden>
+  <div class="overlay-bottom-nav" role="tablist" aria-label="Overlay bottom menu">
+    <button type="button" class="nav-item overlay-nav" data-view="history" role="tab" tabindex="-1" aria-selected="false">History</button>
+    <button type="button" class="nav-item overlay-nav" data-view="favor" role="tab" tabindex="-1" aria-selected="false">Favor</button>
+    <button type="button" class="nav-item overlay-nav" data-view="warcache" role="tab" tabindex="-1" aria-selected="false">Warcache</button>
+    <button type="button" class="nav-item overlay-nav" data-view="skills" role="tab" tabindex="-1" aria-selected="false">Skills</button>
+    <button type="button" class="nav-item overlay-nav" data-view="recipes" role="tab" tabindex="-1" aria-selected="false">Recipes</button>
+    <button type="button" class="nav-item overlay-nav" data-view="settings" role="tab" tabindex="-1" aria-selected="false">Settings</button>
+  </div>
+  <div class="overlay-controls">
+    <button id="overlay-close" title="Close overlay">✕</button>
+  </div>
+  <span id="overlay-resize-grip" class="overlay-resize-grip" title="Drag to resize" aria-hidden="true">
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+      <path d="M1 1L5 5M3 3L7 7M5 5L9 9"/>
+    </svg>
+  </span>
+</div>
 <div class="app">
   <a href="#main-content" class="skip-link">Skip to content</a>
   <nav class="sidebar" aria-label="Main navigation">
@@ -53,6 +105,17 @@
             <input id="notes" type="text" placeholder="session notes (optional)" autocomplete="off">
           </div>
         </div>
+        <details class="route-plan-panel" id="route-plan-panel">
+          <summary>Route Plan</summary>
+          <div class="route-plan-controls">
+            <label>Session
+              <select id="route-session-select">
+                <option value="">Current session</option>
+              </select>
+            </label>
+          </div>
+          <div id="route-plan-results"></div>
+        </details>
         <div class="tracker-controls">
           <input id="loot-search" type="text" placeholder="search items..." autocomplete="off">
           <select id="loot-filter">
@@ -65,7 +128,7 @@
         </div>
         <table id="loot" aria-busy="false">
           <thead>
-            <tr><th>time</th><th>item</th><th>#</th><th>verdict</th><th>route</th><th>actions</th><th>n</th>ote</th></tr>
+            <tr><th>time</th><th>item</th><th>#</th><th>verdict</th><th>route</th><th>actions</th><th>note</th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -111,6 +174,7 @@
           <div class="summary-controls">
             <button id="sort-npc" class="sort-btn active">by NPC</button>
             <button id="sort-map" class="sort-btn">by Map</button>
+            <button id="combat-btn" class="sort-btn" onclick="showCombatBreakdown()" title="Combat breakdown for the current session">Combat</button>
           </div>
         </div>
 
@@ -150,6 +214,7 @@
             <div class="settings-search" style="flex:1">
               <input id="history-search" type="text" placeholder="search by dungeon or notes..." autocomplete="off">
             </div>
+            <button id="compare-btn" class="filter-btn" onclick="showCompareModal()" title="Compare two sessions">Compare</button>
             <label class="bulk-toggle"><input type="checkbox" id="bulk-toggle"> Select</label>
             <div id="bulk-actions" class="bulk-actions hidden">
               <button class="add-btn" id="bulk-export">Export Selected</button>
@@ -167,6 +232,8 @@
           <h2 id="history-detail-title">Session Details</h2>
           <div class="history-detail-actions">
             <button id="export-csv" class="export-btn">Export CSV</button>
+            <button id="export-notes" class="export-btn" style="background:var(--muted)" onclick="exportNotes()" title="Download all loot notes as notes.txt">Export Notes</button>
+            <button id="combat-breakdown-btn" class="export-btn" style="background:var(--muted)" onclick="showCombatBreakdownForDetail()" title="Combat breakdown for this session">Combat</button>
             <button id="delete-session" class="delete-btn">Delete</button>
           </div>
           <div class="history-detail-meta">
@@ -255,6 +322,8 @@
         <div class="settings-search trader-search-bar">
           <input id="trader-search" type="text" placeholder="search NPC or area..." autocomplete="off">
           <button id="show-hidden-btn" class="filter-btn" onclick="toggleShowHiddenOnly()">👁‍🗨 hidden</button>
+          <button class="filter-btn" onclick="showRefreshHistory()" title="View auto-refresh log">📋 refreshes</button>
+          <button class="filter-btn" onclick="showScheduleView()" title="View refresh schedule">📅 schedule</button>
         </div>
         <div id="traders-list"></div>
       </section>
@@ -318,6 +387,17 @@
       <!-- Recipes view -->
       <section id="view-recipes" class="hidden">
         <h2>Recipe Browser</h2>
+        <div class="profit-calculator">
+          <h3>Profit Calculator</h3>
+          <div class="crafting-controls">
+            <select id="profit-skill" class="settings-select">
+              <option value="">All Skills</option>
+            </select>
+            <input id="profit-max-level" type="number" placeholder="max level" min="0" autocomplete="off" style="max-width:140px">
+            <button id="profit-calc" class="add-btn">Calculate</button>
+          </div>
+          <div id="profit-results"></div>
+        </div>
         <div class="history-toolbar">
           <div class="settings-search" style="flex:1">
             <input id="recipes-search" type="text" placeholder="search recipes..." autocomplete="off">
@@ -325,6 +405,7 @@
           <select id="recipes-skill-filter" class="settings-select">
             <option value="">All Skills</option>
           </select>
+          <input id="recipes-level" type="number" placeholder="max level" min="0" autocomplete="off" style="width:110px;padding:8px 12px;background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:var(--radius-sm);font:inherit">
         </div>
         <div class="items-count"><span id="recipes-count">Loading...</span></div>
         <div id="recipes-list"></div>
@@ -350,8 +431,12 @@
         <h2>Drop Rates</h2>
         <p class="muted">Item drop frequency aggregated across all sessions.</p>
         <div class="tracker-controls">
+          <select id="drop-zone-filter" title="Filter items by zone">
+            <option value="">All zones</option>
+          </select>
           <input id="drop-search" type="text" placeholder="search items..." autocomplete="off">
         </div>
+        <div id="drop-filter-banner"></div>
         <div class="items-count"><span id="drop-count">Loading...</span></div>
         <div id="drop-list"></div>
       </section>
@@ -443,20 +528,57 @@
 
         <div class="settings-actions">
           <h3>Game Overlay</h3>
-          <p class="form-help">Popout a transparent HUD window showing DPS, zone, loot value, and trader capacity. The overlay sits on top of the game — use your OS window manager to keep it always-on-top.</p>
+          <p class="form-help">Opens the full app in a small always-on-top window over the game: same views and options in a compact layout, semi-transparent, optionally click-through, no window chrome, no taskbar entry.</p>
+
+          <div class="overlay-form-grid">
+            <div class="form-group">
+              <label for="overlay-opacity">Window Opacity <span id="overlay-opacity-value" class="overlay-slider-value">98%</span></label>
+              <input id="overlay-opacity" type="range" min="30" max="100" step="1" value="98">
+            </div>
+            <div class="form-group">
+              <label for="overlay-click-opacity">Click-through Opacity <span id="overlay-click-opacity-value" class="overlay-slider-value">78%</span></label>
+              <input id="overlay-click-opacity" type="range" min="30" max="100" step="1" value="78">
+            </div>
+            <div class="form-group">
+              <label for="overlay-position">Position</label>
+              <select id="overlay-position" class="settings-select">
+                <option value="bottom-right">Bottom Right</option>
+                <option value="bottom-left">Bottom Left</option>
+                <option value="top-right">Top Right</option>
+                <option value="top-left">Top Left</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="overlay-theme">Theme</label>
+              <select id="overlay-theme" class="settings-select">
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="overlay-accent">Accent Color</label>
+              <input id="overlay-accent" type="color" value="#3FB950">
+            </div>
+            <div class="form-group row">
+              <input id="overlay-click-through" type="checkbox">
+              <label for="overlay-click-through">Start in click-through mode</label>
+            </div>
+          </div>
+
           <div class="settings-actions-row">
+            <button id="overlay-save" type="button" class="add-btn">Save Overlay Settings</button>
+            <button id="overlay-reset" type="button" class="add-btn" style="background:var(--muted)">Reset to Defaults</button>
+          </div>
+          <small class="form-help">Changes apply the next time the overlay opens.</small>
+
+          <div class="settings-actions-row" style="margin-top:16px">
             <button id="open-overlay" class="add-btn" onclick="openOverlay()">Open Overlay</button>
             <button id="copy-overlay-url" class="add-btn" style="background:var(--muted)">Copy URL</button>
           </div>
           <small class="form-help">
-            <strong>No OBS / no browser extensions needed.</strong><br>
-            Press <kbd>O</kbd> to open the overlay from any view.<br>
-            URL: <code id="overlay-url">http://localhost:7777/overlay</code><br>
-            <strong>Always-on-top tips:</strong><br>
-            • Windows: <kbd>Win+Shift+→</kbd> or use <a href="https://github.com/LorenzCK/OnTopReplica" target="_blank" style="color:var(--accent)">OnTopReplica</a><br>
-            • macOS: System Settings → Desktop & Dock → uncheck "Tile windows by holding option"<br>
-            • Linux: Right-click title bar → "Always on Top"<br>
-            • Run from terminal: <code>start msedge --app=http://localhost:7777/overlay</code> (Edge app mode removes browser chrome)
+            <strong>Controls:</strong> drag to move · <kbd>Ctrl+F9</kbd> toggles see-through (click-through) · <kbd>Esc</kbd> closes.<br>
+            The overlay opens automatically as a native window; the URL below is only a browser fallback:<br>
+            URL: <code id="overlay-url">http://localhost:7777/?overlay=1</code>
           </small>
         </div>
       </section>

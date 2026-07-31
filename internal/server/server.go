@@ -31,6 +31,7 @@ type Server struct {
 	ItemByID           map[int]cdn.Item    // item code -> item data
 	itemByName         map[string]cdn.Item // ponytail: lowercase-name index, beats O(n) scan
 	Prices             *prices.Store       // item price history
+	Npcs               cdn.NpcsFile        // full NPC data with services
 	Areas              cdn.AreaIndex       // zone hierarchy lookup
 	Skills             cdn.SkillsFile      // skill definitions
 	Recipes            cdn.RecipesFile     // crafting recipes
@@ -39,13 +40,14 @@ type Server struct {
 	abilityByNameKey   map[string]cdn.Ability
 	abilityIDByNameKey map[string]int
 
+	cfgMu          sync.RWMutex // guards Cfg (written by handleConfig/handleImport, read everywhere)
 	sessionsMu     sync.RWMutex
 	sessionsCache  []SessionSummary
 	sessionsCached bool // false = invalidated
 }
 
 // New wires a Server.
-func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs.FS, tailer *logtail.Tailer, plTailer *logtail.FileTailer, parser *loot.Parser, trader *trader.Manager, items cdn.ItemsFile, ver cdn.Version, areas cdn.AreaIndex, skills cdn.SkillsFile, recipes cdn.RecipesFile, abilities cdn.AbilitiesFile) *Server {
+func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs.FS, tailer *logtail.Tailer, plTailer *logtail.FileTailer, parser *loot.Parser, trader *trader.Manager, items cdn.ItemsFile, ver cdn.Version, npcs cdn.NpcsFile, areas cdn.AreaIndex, skills cdn.SkillsFile, recipes cdn.RecipesFile, abilities cdn.AbilitiesFile) *Server {
 	// Build item-by-ID map
 	itemByID := make(map[int]cdn.Item)
 	itemByName := make(map[string]cdn.Item, len(items))
@@ -103,6 +105,7 @@ func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs
 		ItemByID:           itemByID,
 		itemByName:         itemByName,
 		Prices:             pricesStore,
+		Npcs:               npcs,
 		Areas:              areas,
 		Skills:             skills,
 		Recipes:            recipes,

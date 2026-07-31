@@ -8,7 +8,7 @@
 // Supported event kinds:
 //
 //	login:    [HH:MM:SS] Welcome to Project Gorgon!
-//	zone:     [HH:MM:SS] You have entered <zone>.
+//	zone:     [HH:MM:SS] Downloading Map [...] for area <zone> runtime key
 //	skill:    [HH:MM:SS] [Status] [WW] Skill 'Name' gained 0.00
 package playerlog
 
@@ -45,7 +45,11 @@ type Event struct {
 
 var (
 	loginRe = regexp.MustCompile(`Welcome to Project Gorgon!`)
-	zoneRe  = regexp.MustCompile(`You have entered (.+?)\.$`)
+	// Friendly zone name from map download lines, e.g.
+	// "Downloading Map [9e4c...] GUID 9e4c... for area Serbule Hills runtime key ..."
+	zoneFriendlyRe = regexp.MustCompile(`Downloading Map .*? for area (.+?) runtime key`)
+	// Legacy fallback (not seen in real logs, kept for safety).
+	zoneLegacyRe = regexp.MustCompile(`You have entered (.+?)\.$`)
 	// [HH:MM:SS] [Status] [WW] Skill 'Name' gained 0.00
 	skillRe = regexp.MustCompile(`\[Status\]\s+\[WW\]\s+Skill '(.+?)' gained (\d+\.?\d*)`)
 	// UseAbility(Ability(Name,ID))
@@ -90,7 +94,10 @@ func (p *Parser) ParseLine(line string) *Event {
 	}
 
 	// Zone transition
-	if m := zoneRe.FindStringSubmatch(body); m != nil {
+	if m := zoneFriendlyRe.FindStringSubmatch(body); m != nil {
+		return &Event{Raw: line, Kind: KindZone, Zone: strings.TrimSpace(m[1])}
+	}
+	if m := zoneLegacyRe.FindStringSubmatch(body); m != nil {
 		return &Event{Raw: line, Kind: KindZone, Zone: strings.TrimSpace(m[1])}
 	}
 

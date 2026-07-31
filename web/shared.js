@@ -30,7 +30,9 @@ const state = {
   combatData: null,
   combatOverrides: {}, // ability key -> { direct_damage, dot_parts:[{ element, damage, seconds }] }
   zoneNpcs: [],
-  dropRates: null
+  dropRates: null,
+  dropZone: undefined, // active zone filter ('' = all zones); undefined = not chosen yet
+  dropSource: '' // active enemy drill-down ('' = none)
 };
 
 // Shared request state (must be initialized before any startup API calls)
@@ -448,6 +450,7 @@ function switchView(view) {
   $('#view-title').innerHTML = `${titles[view]} <small id="state">${state.session?.state || 'idle'}</small>`;
 
   if (view === 'dashboard') renderDashboard();
+  if (view === 'tracker') loadRoutePlan();
   if (view === 'summary' && state.session) renderSummary(state.session);
   if (view === 'history') renderHistory();
   if (view === 'favor') renderFavorView();
@@ -457,7 +460,7 @@ function switchView(view) {
   if (view === 'skills') renderSkillsView();
   if (view === 'recipes') renderRecipesView();
   if (view === 'combat') renderCombatView();
-  if (view === 'drop-rates') renderDropRatesView();
+  if (view === 'drop-rates') { state.dropZone = undefined; state.dropSource = ''; renderDropRatesView(); }
   if (view === 'settings') renderSettingsView();
 }
 
@@ -500,6 +503,8 @@ function renderSession(s) {
     if (lootSig !== __trackerLootSig && !document.querySelector('.loot-note-input')) {
       __trackerLootSig = lootSig;
       renderLootTable(s);
+      // Reuse the tracker refresh cycle: keep the current-session plan in sync.
+      if (($('#route-session-select')?.value || '') === '') renderRoutePlan(s);
     }
 
     const notesSig = `${s.state}|${s.notes || ''}`;
@@ -650,7 +655,7 @@ function renderLootTable(s) {
   tbody.innerHTML = '';
   const allLoot = s.loot || [];
   countEl.textContent = allLoot.length;
-  
+
   // Apply filters
   const search = ($('#loot-search')?.value || '').toLowerCase();
   const filter = $('#loot-filter')?.value || '';
@@ -674,7 +679,7 @@ function addRow(e) {
     <td>${iconHtml}${escapeHtml(e.name)}</td>
     <td class="count">${e.count}</td>
     <td><span class="verdict ${e.decision.verdict}">${e.decision.verdict.replace(/_/g, ' ')}</span></td>
-    <td class="route">${routeText(e.decision)}</td>
+    <td class="route"><a href="#" class="route-link" title="Plan a sell route for this item" onclick="event.preventDefault();planRoute('${escapeHtml(e.name).replace(/'/g, "\\'")}')">${routeText(e.decision)}</a></td>
     <td><button class="loot-del-btn" onclick="deleteLootItem('${escapeHtml(e.name).replace(/'/g, "\\'")}')">×</button></td>
     <td class="loot-note">
       <span class="loot-note-text" ondblclick="editLootNote(this,'${escapeHtml(e.name).replace(/'/g, "\\'")}')">${escapeHtml(e.note || '') || '<span style="opacity:0.3;cursor:help" title="double-click to add note">—</span>'}</span>
@@ -708,6 +713,280 @@ window.deleteLootItem = async function(name) {
   const res = await api(`/api/loot?name=${encodeURIComponent(name)}`, 'DELETE');
   if (res) refreshAll();
 };
+
+// Jump from a tracked item's route cell to the Route Plan panel, focused on that item.
+window.planRoute = function(name) {
+  __routePlanHighlight = name;
+  const sel = $('#route-session-select');
+  if (sel) sel.value = '';
+  switchView('tracker'); // tracker entry triggers loadRoutePlan → renderRoutePlan
+  const panel = $('#route-plan-panel');
+  if (panel && !panel.open) panel.open = true;
+  const results = $('#route-plan-results');
+  if (results) results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
+
+// ── Route Plan panel (Tracker view): per-session gift/sell/keep plan ──
+let __routeSessionsLoaded = false;
+let __routePlanHighlight = null;
+let __routePlannerCache = {}; // item → { routes }; planner data changes rarely, cache per page load
+
+function routeSessionLabel(id) {
+  // "session-20260731-124047" → "07-31 12:40"
+  const m = String(id || '').match(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/);
+  return m ? `${m[2]}-${m[3]} ${m[4]}:${m[5]}` : String(id || '');
+}
+
+async function loadRoutePlan() {
+  const sel = $('#route-session-select');
+  if (!sel) return;
+  if (!__routeSessionsLoaded) {
+    const sessions = await api('/api/sessions');
+    if (Array.isArray(sessions)) {
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">Current session</option>' + sessions.map(s => {
+        const id = s && s.id;
+        if (!id) return '';
+        return `<option value="${escapeHtml(id)}">${escapeHtml(routeSessionLabel(id))}</option>`;
+      }).join('');
+      if (cur) sel.value = cur;
+      __routeSessionsLoaded = true;
+    }
+  }
+  renderRoutePlan();
+}
+
+let __traderDetailCache = {};       // trader → detail (planner data changes rarely, cache per page load)
+let __traderApiUnavailable = false; // set once when ?trader= isn't served → item-centric view
+let __routePlanRenderToken = 0;     // guards against stale async renders racing newer ones
+
+async function renderRoutePlan(preloaded) {
+  const results = $('#route-plan-results');
+  const sel = $('#route-session-select');
+  if (!results || !sel) return;
+  const token = ++__routePlanRenderToken;
+  const sid = sel.value;
+  const s = (preloaded && !sid) ? preloaded
+    : (sid ? await api('/api/session/' + encodeURIComponent(sid)) : await api('/api/session'));
+  if (!s) return;
+
+  const loot = Array.isArray(s.loot) ? s.loot : [];
+  const byName = new Map();
+  for (const e of loot) {
+    const name = String(e.name || '').trim() || '(unnamed)';
+    const row = byName.get(name) || { name, count: 0, decision: e.decision || {} };
+    row.count += Number(e.count) || 1;
+    row.value = Math.max(row.value || 0, Number(e.value) || 0);
+    byName.set(name, row);
+  }
+  const items = [...byName.values()];
+
+  if (!items.length) {
+    if (token === __routePlanRenderToken) results.innerHTML = '<div class="route-plan-empty">no items in this session</div>';
+    return;
+  }
+
+  const favor = items.filter(i => i.decision.verdict === 'favor');
+  const sell = items.filter(i => i.decision.verdict === 'sell_vendor' || i.decision.verdict === 'sell_consignment');
+  const keep = items.filter(i => i.decision.verdict !== 'favor' && i.decision.verdict !== 'sell_vendor' && i.decision.verdict !== 'sell_consignment');
+
+  // Trader-centric view when the ?trader= endpoint is served; item-centric fallback otherwise.
+  if (await renderTraderPlan(results, items, favor, sell, keep, token)) return;
+  if (token !== __routePlanRenderToken) return;
+
+  let html = '';
+  if (favor.length) html += '<h4 class="route-plan-block-title favor">🎁 Give as favor</h4>' + favor.map(planFavorRow).join('');
+  if (sell.length) html += '<h4 class="route-plan-block-title sell">💰 Sell</h4>' + sell.map(planSellRow).join('');
+  if (keep.length) html += '<h4 class="route-plan-block-title keep">📦 Keep</h4>' + keep.map(planKeepRow).join('');
+  results.innerHTML = html;
+  applyRoutePlanHighlight(results);
+
+  // Trader suggestions for sell items, batched (max 10; the rest render without routes).
+  await Promise.all(sell.slice(0, 10).map(it => planRoutesFor(it)));
+}
+
+function applyRoutePlanHighlight(results) {
+  if (!__routePlanHighlight) return;
+  const row = [...results.querySelectorAll('.route-plan-item')].find(r => r.dataset.name === __routePlanHighlight);
+  if (row) {
+    row.classList.add('highlight');
+    row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  __routePlanHighlight = null;
+}
+
+// Routes for one item via the existing ?item= endpoint (cached).
+async function fetchRoutesFor(it) {
+  if (!(it.name in __routePlannerCache)) {
+    __routePlannerCache[it.name] = await api('/api/route-planner?item=' + encodeURIComponent(it.name)) || null;
+  }
+  return Array.isArray(__routePlannerCache[it.name]?.routes) ? __routePlannerCache[it.name].routes : [];
+}
+
+// Raw fetch (no error toast) so a missing ?trader= endpoint fails silently → fallback view.
+async function fetchTraderDetail(name) {
+  if (name in __traderDetailCache) return __traderDetailCache[name];
+  let d = null;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 10000);
+    const r = await fetch('/api/route-planner?trader=' + encodeURIComponent(name), { signal: ctrl.signal });
+    clearTimeout(t);
+    if (r.ok) d = await r.json();
+  } catch (e) { /* missing endpoint or timeout → null */ }
+  __traderDetailCache[name] = d;
+  return d;
+}
+
+// Trader-centric route plan: traders sorted by distance, each with sell/favor sections.
+// Returns true when it rendered; false tells renderRoutePlan to use the item-centric view.
+async function renderTraderPlan(results, items, favor, sell, keep, token) {
+  if (__traderApiUnavailable) return false;
+
+  // Discover candidate traders from the current loot: sell items via the existing
+  // item endpoint, favor items from their per-NPC targets.
+  const sellByTrader = new Map();
+  const sellRoutes = await Promise.all(sell.map(it => fetchRoutesFor(it)));
+  if (token !== __routePlanRenderToken) return true; // stale render, stop here
+  for (let i = 0; i < sell.length; i++) {
+    for (const r of sellRoutes[i]) {
+      const t = String(r?.trader || '').trim();
+      if (!t) continue;
+      const arr = sellByTrader.get(t) || [];
+      arr.push({ name: sell[i].name, count: sell[i].count, value: sell[i].value || 0 });
+      sellByTrader.set(t, arr);
+    }
+  }
+  const favorByTrader = new Map();
+  for (const it of favor) {
+    for (const tgt of (it.decision.favor_targets || [])) {
+      const t = String(tgt.npc || '').trim();
+      if (!t) continue;
+      const arr = favorByTrader.get(t) || [];
+      arr.push({ name: it.name, count: it.count, score: Number(tgt.score) || 0 });
+      favorByTrader.set(t, arr);
+    }
+  }
+  const traderNames = [...new Set([...sellByTrader.keys(), ...favorByTrader.keys()])];
+  if (!traderNames.length) return false;
+
+  if (token === __routePlanRenderToken) results.innerHTML = '<div class="route-plan-loading">⟳ checking trader details…</div>';
+
+  const details = await Promise.all(traderNames.map(async n => ({ name: n, detail: await fetchTraderDetail(n) })));
+  if (!details.some(x => x.detail)) {
+    __traderApiUnavailable = true; // ?trader= not served; item-centric view from now on
+    return false;
+  }
+  if (token !== __routePlanRenderToken) return true;
+
+  // Merge endpoint data with locally-derived lists, keeping only items actually in this session.
+  const have = new Set(items.map(i => i.name));
+  const cards = details.map(({ name, detail }) => {
+    let sellList = sellByTrader.get(name) || [];
+    let favorList = favorByTrader.get(name) || [];
+    let distance = null;
+    let area = '';
+    if (detail) {
+      // null/undefined distance_km must stay null — Number(null) === 0 would
+      // show a misleading "0.0 km" badge when the CDN has no coordinates.
+      distance = detail.distance_km == null ? null : Number(detail.distance_km);
+      area = String(detail.area || '');
+      const ds = (detail.sell_items || []).filter(s => have.has(s.name));
+      if (ds.length) sellList = ds.map(s => ({ name: s.name, count: Number(s.count) || 1, value: Number(s.value) || 0 }));
+      const df = (detail.favor_items || []).filter(f => have.has(f.name));
+      if (df.length) favorList = df.map(f => ({ name: f.name, count: Number(f.count) || 1, score: Number(f.favor_score) || 0 }));
+    }
+    return { name, distance: Number.isFinite(distance) ? distance : null, area, sellList, favorList };
+  }).filter(c => c.sellList.length || c.favorList.length);
+  if (!cards.length) return false;
+
+  // Nearest first; traders without distance fall back to alphabetical order.
+  cards.sort((a, b) => {
+    const ad = a.distance != null, bd = b.distance != null;
+    if (ad !== bd) return ad ? -1 : 1;
+    if (ad) return a.distance - b.distance;
+    return a.name.localeCompare(b.name);
+  });
+
+  let html = '';
+  cards.forEach((c, i) => {
+    const open = i < 5; // many traders → first few open, rest collapsible
+    const dist = c.distance != null
+      ? ` <span class="route-trader-distance">(${c.distance.toFixed(1)} km)</span>` : '';
+    const sellTotal = c.sellList.reduce((sum, it) => sum + (it.value || 0) * (it.count || 1), 0);
+    const favorTotal = c.favorList.reduce((sum, it) => sum + (it.score || 0), 0);
+    const sellHtml = c.sellList.length
+      ? `<div class="route-section-title sell">💰 Sell (${c.sellList.length} item${c.sellList.length > 1 ? 's' : ''}, ${Math.round(sellTotal)}g)</div>`
+        + c.sellList.map(routePlanCardItem).join('')
+      : '';
+    const favorHtml = c.favorList.length
+      ? `<div class="route-section-title favor">❤️ Favor (${c.favorList.length} item${c.favorList.length > 1 ? 's' : ''}, +${favorTotal.toFixed(1)} score)</div>`
+        + c.favorList.map(routePlanCardItem).join('')
+      : '';
+    html += `<details class="route-trader-card"${open ? ' open' : ''}>
+      <summary class="route-trader-head">📍 ${escapeHtml(c.name)}${dist}</summary>
+      ${c.area ? `<div class="route-trader-area">${escapeHtml(c.area)}</div>` : ''}
+      ${sellHtml}${favorHtml}
+    </details>`;
+  });
+  if (keep.length) html += '<h4 class="route-plan-block-title keep">📦 Keep</h4>' + keep.map(planKeepRow).join('');
+  results.innerHTML = html;
+  applyRoutePlanHighlight(results);
+  return true;
+}
+
+function routePlanCardItem(it) {
+  return `<div class="route-plan-item" data-name="${escapeHtml(it.name)}">
+    <span class="route-plan-item-name">${escapeHtml(it.name)}</span>
+    <span class="route-plan-count">x${it.count}</span>
+  </div>`;
+}
+
+function planFavorRow(it) {
+  const targets = [...(it.decision.favor_targets || [])].sort((a, b) => (b.score || 0) - (a.score || 0));
+  const shown = targets.slice(0, 3);
+  const more = targets.length - shown.length;
+  const detail = targets.length
+    ? shown.map(t => `<span class="route-plan-target">${escapeHtml(t.npc)} <span class="route-plan-area">${escapeHtml(t.area || '')}</span> +${t.score ?? 0}</span>`).join('') +
+      (more > 0 ? `<span class="route-plan-more">+${more} more</span>` : '')
+    : '<span class="route-plan-muted">no favor targets</span>';
+  return `<div class="route-plan-item" data-name="${escapeHtml(it.name)}">
+    <span class="route-plan-item-name">${escapeHtml(it.name)} <span class="route-plan-count">x${it.count}</span></span>
+    <span class="route-plan-item-detail">${detail}</span>
+  </div>`;
+}
+
+function planSellRow(it) {
+  const reason = it.decision.sell_reason
+    ? `<span class="route-plan-reason">${escapeHtml(it.decision.sell_reason)}</span>`
+    : '<span class="route-plan-muted">sell to vendor</span>';
+  return `<div class="route-plan-item" data-name="${escapeHtml(it.name)}">
+    <span class="route-plan-item-name">${escapeHtml(it.name)} <span class="route-plan-count">x${it.count}</span></span>
+    <span class="route-plan-item-detail">${reason}<span class="route-plan-routes"></span></span>
+  </div>`;
+}
+
+function planKeepRow(it) {
+  return `<div class="route-plan-item" data-name="${escapeHtml(it.name)}">
+    <span class="route-plan-item-name route-plan-muted">${escapeHtml(it.name)} <span class="route-plan-count">x${it.count}</span></span>
+    <span class="route-plan-item-detail route-plan-muted">keep</span>
+  </div>`;
+}
+
+async function planRoutesFor(it) {
+  const routes = await fetchRoutesFor(it);
+  if (!routes.length) return;
+  const container = [...document.querySelectorAll('.route-plan-item')]
+    .find(r => r.dataset.name === it.name)?.querySelector('.route-plan-routes');
+  if (!container) return;
+  container.innerHTML = routes.slice(0, 3).map(r => {
+    const trader = String(r.trader || '').trim();
+    const link = trader
+      ? `<a href="#" class="route-plan-link" onclick="event.preventDefault();showTraderHistory('${escapeHtml(trader).replace(/'/g, "\\'")}')">${escapeHtml(trader)}</a>`
+      : '<span class="route-plan-muted">?</span>';
+    return `<span class="route-plan-trader">${link} <span class="route-plan-area">${escapeHtml(r.area || '')}</span>${r.refresh_in_hours ? ' · ' + r.refresh_in_hours.toFixed(1) + 'h' : ''}</span>`;
+  }).join('');
+}
 function routeText(d) {
   let base = '';
   if (d.verdict === 'favor') {
@@ -868,6 +1147,7 @@ function renderRecipesView() {
 
   const search = ($('#recipes-search')?.value || '').toLowerCase();
   const skillFilter = $('#recipes-skill-filter')?.value || '';
+  const maxLevel = parseInt($('#recipes-level')?.value) || 0;
 
   // Populate skill filter dropdown
   const select = $('#recipes-skill-filter');
@@ -887,6 +1167,7 @@ function renderRecipesView() {
   const filtered = allRecipes.filter(r => {
     if (search && !(r.Name || '').toLowerCase().includes(search) && !(r.Skill || '').toLowerCase().includes(search)) return false;
     if (skillFilter && r.Skill !== skillFilter) return false;
+    if (maxLevel > 0 && (r.SkillLevelReq || 0) > maxLevel) return false;
     return true;
   });
 
@@ -935,11 +1216,59 @@ function renderRecipesView() {
   }
 }
 
+// Debounced live search against /api/recipes/search when text/level filters
+// are active; falls back to the local full-list render otherwise.
+let __recipesSearchTimer = null;
+function recipesLiveSearch() {
+  const q = ($('#recipes-search')?.value || '').trim();
+  const level = parseInt($('#recipes-level')?.value) || 0;
+  const skill = $('#recipes-skill-filter')?.value || '';
+  if (!q && !level) { renderRecipesView(); return; }
+  clearTimeout(__recipesSearchTimer);
+  __recipesSearchTimer = setTimeout(async () => {
+    const container = $('#recipes-list');
+    if (!container) return;
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (skill) params.set('skill', skill);
+    if (level) params.set('level', level);
+    const data = await api('/api/recipes/search?' + params.toString());
+    if (!data) return;
+    const hits = Array.isArray(data.recipes) ? data.recipes : [];
+    const count = $('#recipes-count');
+    if (count) count.textContent = `${hits.length} result${hits.length !== 1 ? 's' : ''} (server search, max 50)`;
+    container.innerHTML = '';
+    if (hits.length === 0) {
+      container.innerHTML = '<div class="summary-empty">No recipes match your filters</div>';
+      return;
+    }
+    for (const r of hits) {
+      const card = document.createElement('div');
+      card.className = 'history-card';
+      card.style.cursor = 'default';
+      card.innerHTML = `<div class="history-card-body">
+        <div class="history-card-header">
+          <div class="history-card-dungeon">${escapeHtml(r.name || 'Unnamed')}</div>
+          <div class="history-card-date">${escapeHtml(r.skill || '')} · Lv ${r.level ?? '?'}</div>
+        </div>
+        <div class="history-card-stats" style="flex-wrap:wrap">
+          ${r.result_item ? `<div class="history-stat"><div class="history-stat-label">Result</div><div class="history-stat-value" style="font-size:12px">${escapeHtml(r.result_item)}</div></div>` : ''}
+          <div class="history-stat"><div class="history-stat-label">Ingredients</div><div class="history-stat-value" style="font-size:12px">${(r.ingredients || []).map(i => escapeHtml(i)).join(', ') || '—'}</div></div>
+        </div>
+      </div>`;
+      container.appendChild(card);
+    }
+  }, 300);
+}
+
 $('#recipes-search')?.addEventListener('input', () => {
-  if (state.currentView === 'recipes') renderRecipesView();
+  if (state.currentView === 'recipes') recipesLiveSearch();
 });
 $('#recipes-skill-filter')?.addEventListener('change', () => {
-  if (state.currentView === 'recipes') renderRecipesView();
+  if (state.currentView === 'recipes') recipesLiveSearch();
+});
+$('#recipes-level')?.addEventListener('input', () => {
+  if (state.currentView === 'recipes') recipesLiveSearch();
 });
 
 // Poll feed replacement (avoids per-tab EventSource connection limits)
@@ -1890,16 +2219,34 @@ async function renderDropRatesView() {
   const container = $('#drop-list');
   if (!container) return;
   container.innerHTML = '<div class="summary-empty">Loading drop rates...</div>';
-  const data = await api('/api/drop-rates');
-  if (!data || data.length === 0) {
+
+  // Default the zone filter to the player's current zone on first render of this view.
+  if (state.dropZone === undefined) state.dropZone = String(state.session?.zone || '').trim();
+  const zone = state.dropZone;
+  const source = String(state.dropSource || '').trim();
+
+  const qs = new URLSearchParams();
+  if (zone) qs.set('zone', zone);
+  if (source) qs.set('source', source);
+  const q = qs.toString();
+
+  const raw = await api('/api/drop-rates' + (q ? '?' + q : ''));
+  // Backend contract: { items:[...], zones:[...] }; accept a bare array too
+  // in case the new response shape hasn't shipped yet.
+  const items = Array.isArray(raw) ? raw : (Array.isArray(raw?.items) ? raw.items : []);
+  const allZones = Array.isArray(raw) ? [] : (Array.isArray(raw?.zones) ? raw.zones : []);
+  renderDropZoneOptions(allZones, zone);
+
+  if (!items.length) {
     container.innerHTML = '<div class="summary-empty">No session data yet. Complete sessions to see drop rates.</div>';
     $('#drop-count').textContent = '0 items';
+    renderDropRateBanner(zone, source);
     return;
   }
-  state.dropRates = data;
+  state.dropRates = items;
   const search = ($('#drop-search')?.value || '').toLowerCase();
 
-  const filtered = search ? data.filter(d => d.name.toLowerCase().includes(search)) : data;
+  const filtered = search ? items.filter(d => d.name.toLowerCase().includes(search)) : items;
   filtered.sort((a, b) => (b.now_chance || 0) - (a.now_chance || 0));
 
   const latestKillMob = Array.isArray(state.session?.kills) && state.session.kills.length
@@ -1908,7 +2255,7 @@ async function renderDropRatesView() {
   const dungeonCtx = String(state.session?.dungeon || '').trim();
   const cleanedDungeonCtx = ['unnamed', 'unknown', 'test dungeon'].includes(dungeonCtx.toLowerCase()) ? '' : dungeonCtx;
   const currentCtx = latestKillMob || cleanedDungeonCtx || 'current context';
-  $('#drop-count').textContent = `${filtered.length} item${filtered.length !== 1 ? 's' : ''} (${data.length} unique) · chance context: ${currentCtx}`;
+  $('#drop-count').textContent = `${filtered.length} item${filtered.length !== 1 ? 's' : ''} (${items.length} unique) · chance context: ${currentCtx}`;
 
   let html = '<table style="width:100%;border-collapse:collapse"><thead><tr>' +
     '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">Item</th>' +
@@ -1918,25 +2265,126 @@ async function renderDropRatesView() {
     '</tr></thead><tbody>';
   for (const d of filtered.slice(0, 500)) {
     const src = (Array.isArray(d.sources) && d.sources.length > 0) ? d.sources[0] : null;
-    const srcText = src
-      ? `${src.name} (${(src.chance || 0).toFixed(1)}%)`
-      : (d.primary_source || 'Unknown');
+    const srcName = src ? src.name : (d.primary_source || '');
+    const srcCell = srcName && srcName !== 'Unknown'
+      ? `<button class="drop-source-link" data-source="${escapeHtml(srcName)}">${escapeHtml(srcName)}</button>${src ? ` (${(src.chance || 0).toFixed(1)}%)` : ''}`
+      : 'Unknown';
     html += `<tr>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${escapeHtml(d.name)}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${escapeHtml(srcText)}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row)"><button class="drop-toggle" data-toggle="1" aria-expanded="false" title="Show drop details">▸</button> ${escapeHtml(d.name)}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${srcCell}</td>
       <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${(d.now_chance || 0).toFixed(1)}%</td>
       <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${(d.overall_chance || 0).toFixed(1)}%</td>
-    </tr>`;
+    </tr>
+    <tr class="drop-detail"><td colspan="4">${dropDetailHtml(d)}</td></tr>`;
   }
   html += '</tbody></table>';
   if (filtered.length > 500) {
     html += `<div class="summary-empty">+ ${filtered.length - 500} more items (narrow your search)</div>`;
   }
   container.innerHTML = html;
+  renderDropRateBanner(zone, source);
+}
+
+function dropDetailHtml(d) {
+  const sources = Array.isArray(d.sources) ? d.sources : [];
+  const zones = Array.isArray(d.zones) ? d.zones : [];
+  if (sources.length === 0 && zones.length === 0) {
+    return '<span class="drop-detail-count">no source data yet</span>';
+  }
+  let html = '';
+  if (sources.length) {
+    html += `<div class="drop-detail-block"><span class="drop-detail-label">Drops from</span> ` +
+      sources.map(s => `<button class="drop-source-link" data-source="${escapeHtml(s.name)}">${escapeHtml(s.name)}</button> <span class="drop-detail-count">(${s.count || 0}, ${(s.chance || 0).toFixed(1)}%)</span>`).join(', ') +
+      '</div>';
+  }
+  if (zones.length) {
+    html += `<div class="drop-detail-block"><span class="drop-detail-label">Zones</span> ` +
+      zones.map(z => `${escapeHtml(z.name)} <span class="drop-detail-count">(${z.count || 0}, ${(z.chance || 0).toFixed(1)}%)</span>`).join(', ') +
+      '</div>';
+  }
+  return html;
+}
+
+function renderDropZoneOptions(zones, activeZone) {
+  const sel = $('#drop-zone-filter');
+  if (!sel) return;
+  const cur = String(state.session?.zone || '').trim();
+  const seen = new Set();
+  if (cur) seen.add(cur.toLowerCase());
+  let opts = '';
+  if (cur) opts += `<option value="${escapeHtml(cur)}">Current zone: ${escapeHtml(zonePath(cur))}</option>`;
+  opts += '<option value="">All zones</option>';
+  for (const z of zones) {
+    const n = String(z && z.name || '').trim();
+    if (!n || seen.has(n.toLowerCase())) continue;
+    seen.add(n.toLowerCase());
+    opts += `<option value="${escapeHtml(n)}">${escapeHtml(zonePath(n))}</option>`;
+  }
+  sel.innerHTML = opts;
+  sel.value = activeZone;
+  if (sel.value !== activeZone) state.dropZone = ''; // active zone no longer offered
+}
+
+function renderDropRateBanner(zone, source) {
+  const el = $('#drop-filter-banner');
+  if (!el) return;
+  let html = '';
+  if (source) html += `<span class="drop-banner">Drops from: <strong>${escapeHtml(source)}</strong> <button class="drop-banner-x" data-clear="source" title="Clear filter">✕</button></span>`;
+  if (zone) html += `<span class="drop-banner">Zone: ${escapeHtml(zonePath(zone))} <button class="drop-banner-x" data-clear="zone" title="Clear filter">✕</button></span>`;
+  el.innerHTML = html;
 }
 
 // Drop search listener
 $('#drop-search')?.addEventListener('input', () => {
+  if (state.currentView === 'drop-rates') renderDropRatesView();
+});
+
+// Zone filter listener
+$('#drop-zone-filter')?.addEventListener('change', (e) => {
+  state.dropZone = e.target.value;
+  if (state.currentView === 'drop-rates') renderDropRatesView();
+});
+
+// Delegated: row expand/collapse, source drill-down, filter-banner clear.
+// Containers are re-rendered, so listeners live on them and match by data attr.
+$('#drop-list')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) {
+    // Overlay only: the whole row is the expand target (the ▸ is a tiny target
+    // in a 460px window). Mirrors the toggle the button branch does below.
+    if (!document.body.classList.contains('overlay-mode')) return;
+    const row = e.target.closest('tr');
+    const detail = row && row.nextElementSibling;
+    if (detail && detail.classList.contains('drop-detail')) {
+      const open = detail.classList.toggle('open');
+      const t = row.querySelector('.drop-toggle');
+      if (t) {
+        t.textContent = open ? '▾' : '▸';
+        t.setAttribute('aria-expanded', open ? 'true' : 'false');
+      }
+    }
+    return;
+  }
+  if (btn.dataset.toggle) {
+    const detail = btn.closest('tr')?.nextElementSibling;
+    if (detail && detail.classList.contains('drop-detail')) {
+      const open = detail.classList.toggle('open');
+      btn.textContent = open ? '▾' : '▸';
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+    return;
+  }
+  if (btn.dataset.source) {
+    state.dropSource = btn.dataset.source;
+    if (state.currentView === 'drop-rates') renderDropRatesView();
+  }
+});
+
+$('#drop-filter-banner')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-clear]');
+  if (!btn) return;
+  if (btn.dataset.clear === 'zone') state.dropZone = '';
+  else state.dropSource = '';
   if (state.currentView === 'drop-rates') renderDropRatesView();
 });
 
@@ -1958,6 +2406,11 @@ $('#loot-filter')?.addEventListener('change', () => {
   if (state.session) renderLootTable(state.session);
 });
 
+$('#route-session-select')?.addEventListener('change', () => {
+  __routePlanHighlight = null;
+  renderRoutePlan();
+});
+
 // Manual loot entry
 $('#manual-loot-add')?.addEventListener('click', async () => {
   const name = $('#manual-loot-name').value.trim();
@@ -1974,14 +2427,62 @@ $('#manual-loot-add')?.addEventListener('click', async () => {
   }
 });
 
-// Open overlay in a lightweight popout window (no OBS/extensions needed)
-window.openOverlay = function() {
-  const w = 380, h = 600;
-  const left = screen.width - w - 20;
-  const top = 80;
-  window.open('/overlay', 'gorgon-overlay',
-    `width=${w},height=${h},left=${left},top=${top},toolbar=no,location=no,status=no,menubar=no,scrollbars=no,resizable=yes`);
+// Open the native always-on-top HUD overlay (spawned as a detached process).
+// The browser URL is only a fallback for machines that can't run the native window.
+window.openOverlay = async function() {
+  const res = await api('/api/overlay/spawn', 'POST');
+  if (res && res.ok) toast('Overlay opened', 'info');
+  else if (res && res.error) toast(res.error, 'error');
 };
+
+// Overlay-window controls (bar is hidden outside overlay mode). The native
+// host binds overlayToggleClickThrough/overlayClose via WebView2; in a plain
+// browser tab these are no-ops. See-through has no bar button — toggle via
+// Ctrl+F9 (native) or the 'o' key (below).
+let __overlaySeeThrough = false;
+window.toggleOverlaySeeThrough = function() {
+  __overlaySeeThrough = !__overlaySeeThrough;
+  document.body.classList.toggle('clickthrough', __overlaySeeThrough);
+  window.overlayToggleClickThrough?.(__overlaySeeThrough);
+};
+$('#overlay-close')?.addEventListener('click', () => { window.overlayClose?.(); });
+// Drag: mousedown on the top or bottom menu bar starts a native window move,
+// unless the click lands on a button, link, input, or the resize grip (those
+// keep working normally). No-op in a plain browser tab.
+function makeDragListener(el) {
+  el?.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    const interactive = e.target.closest('button, a, input, select, textarea, #overlay-resize-grip');
+    if (interactive) return;
+    e.preventDefault(); // no text selection while dragging
+    window.overlayStartDrag?.();
+  });
+}
+makeDragListener($('#overlay-bar'));
+makeDragListener($('#overlay-bottom'));
+// Resize grip (bottom-right corner): drag resizes the native window. The host
+// binds overlayResize via WebView2; no-op in a plain browser tab. Minimums
+// (320x400) are enforced natively too — clamping here just avoids useless calls.
+$('#overlay-resize-grip')?.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  e.preventDefault(); // no text selection while resizing
+  const startX = e.clientX, startY = e.clientY;
+  const startW = window.innerWidth, startH = window.innerHeight;
+  const onMove = ev => {
+    window.overlayResize?.(
+      Math.max(320, startW + (ev.clientX - startX)),
+      Math.max(400, startH + (ev.clientY - startY))
+    );
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+});
+// Overlay brand = Home button: same view switch the nav items use (no active state needed).
+$('#overlay-home')?.addEventListener('click', () => switchView('dashboard'));
 
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
@@ -1997,7 +2498,11 @@ document.addEventListener('keydown', e => {
   }
   if (e.key === 'o' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) {
     e.preventDefault();
-    window.openOverlay();
+    if (document.body.classList.contains('overlay-mode')) {
+      toggleOverlaySeeThrough(); // in the overlay, 'o' toggles see-through instead of spawning another window
+    } else {
+      window.openOverlay();
+    }
   }
   if (e.key === 'r' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) {
     e.preventDefault();

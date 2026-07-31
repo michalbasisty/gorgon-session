@@ -1,176 +1,54 @@
-# Gorgon App Audit: Refactor, Improve, Expand (No VIP)
+# Gorgon App: Refactor, Improve, Expand — Status
 
-_Date: 2026-07-29_
+_Last updated: 2026-07-31_
 
-This list is based on a codebase scan of backend (`cmd/`, `internal/`) and frontend (`web/`) plus test run results.
-
----
-
-## ✅ Current health snapshot
-
-- `go test ./...` passes.
-- Core features are working and modularized by package.
-- Biggest risk now is **technical debt in API/server and frontend state management**, not basic functionality.
+Originally an audit list; most high-priority items are now done. `go test ./...` passes.
 
 ---
 
-## 1) Refactor list (structure/maintainability)
+## ✅ Done
 
-## P0 (do first)
+**Refactor**
+- **Split `internal/server/server.go` into focused files** — now `server.go`, `server_http.go`, `server_sessions.go`, `server_admin.go`, `server_data.go`, `server_routes.go` (+ platform `spawn_*.go`).
+- **Modularized frontend state by view** — `web/shared.js`, `summary.js`, `history.js`, `favor-traders.js`, `settings-warcache.js`, `init.js` (was one global `state` sprawl).
+- **Typed DTOs where it mattered** — `AreaTraders.NPCs` is now `[]TraderInfo` (was `interface{}`); `configPatch` typed for `/api/config`.
 
-- [ ] **Split `internal/server/server.go` into focused files by domain**
-  - Why: one large file handles session, config, traders, exports, combat, drop rates, static serving.
-  - Suggested split:
-    - `server_session.go`
-    - `server_config.go`
-    - `server_history.go`
-    - `server_traders.go`
-    - `server_static.go`
-    - `server_analytics.go`
+**Reliability / bugs**
+- **`/api/config` partial update** — POST/PUT now merges only provided fields (`applyConfigPatch`, `configPatch`) instead of overwriting with zero values; invalid `loot_regex` is rejected with `400` and the old parser state is kept. Covered by `TestApplyConfigPatch_MergesNotReplaces`.
+- **SSE fan-out** — `handleFeed` now subscribes per client (`Sess.Subscribe()` / `unsubscribe()`) instead of a shared channel, so clients no longer steal each other's events.
+- **SSE ping goroutine leak** — ping is written in the same select loop (15s ticker + `r.Context().Done()`); no separate goroutine to leak.
+- **Session ID path validation** — `/api/session/{id}` validates `^session-\d{8}-\d{6}$` before touching disk (`sessionIDPattern`; `TestHandleSessionByID_InvalidID`).
 
-- [ ] **Create shared request/response DTO structs for API handlers**
-  - Why: many inline anonymous structs make validation inconsistent and harder to test.
-  - Outcome: cleaner validation + easier OpenAPI/doc generation later.
+**Expansion features**
+- Sell route optimizer (`/api/route-planner`, route plan panel in Tracker).
+- Session comparison mode (`/api/sessions/compare`).
+- Combat efficiency panel (`/api/combat`, `/api/combat/breakdown`).
+- Feature-scope export/import (settings `/api/export` + `/api/import`, trader history CSV, notes export, sessions bulk export).
+- Cache status UI — the Warcache view shows CDN cache version age with refresh controls.
 
-- [ ] **Refactor frontend global state into per-view modules** (`web/shared.js`, `summary.js`, `history.js`, `favor-traders.js`, `settings-warcache.js`)
-  - Why: many cross-file globals and inline handlers increase regressions.
-  - Outcome: predictable state flow and simpler debugging.
-
-## P1
-
-- [ ] **Add service layer between HTTP handlers and core packages**
-  - Why: handlers currently mix transport + business logic.
-  - Outcome: easier unit tests and cleaner API changes.
-
-- [ ] **Normalize naming (`Value` vs `Valor`) across backend and frontend**
-  - Why: mixed naming increases mapping mistakes.
-  - Outcome: clearer contracts and fewer accidental bugs.
-
-- [ ] **Replace `interface{}` fields with concrete types**
-  - Example: `AreaTraders.NPCs interface{}` should be a typed slice.
+**Tests**
+- `internal/config/config_test.go` added (overlay defaults after empty load).
+- Handler tests for config patch semantics and session ID validation added (`internal/server/server_test.go`).
 
 ---
 
-## 2) Improvement list (bugs, reliability, UX)
+## ⏳ Still open
 
-## P0 (high-impact)
-
-- [ ] **Fix `/api/config` partial update behavior**
-  - Current risk: missing fields can overwrite config with zero values.
-  - Concrete issue: `pushPlayerPricesToServer()` posts partial payload but server assigns all fields directly.
-  - Fix: patch semantics (only apply provided fields) + validation.
-
-- [ ] **Fix SSE event fan-out model**
-  - Current risk: multiple SSE clients consume from one channel and can miss events (work-stealing behavior).
-  - Fix: subscription manager with per-client buffered channels.
-
-- [ ] **Fix goroutine leak in SSE ping loop**
-  - Current risk: ping goroutine can block on channel send after disconnect.
-  - Fix: remove extra ping channel and write ping directly in same select loop.
-
-- [ ] **Sanitize `/api/session/{id}` path input**
-  - Current risk: path traversal attempts via crafted IDs.
-  - Fix: strict ID regex allowlist (`^session-\d{8}-\d{6}$` or UUID format if changed later).
-
-## P1
-
-- [ ] **Handle parser regex errors on live config update**
-  - Current behavior ignores parser set-regex error.
-  - Fix: reject invalid regex with `400` and keep old parser state.
-
-- [ ] **Reduce race risk in tailers (`Tailer`, `FileTailer`)**
-  - Reason: mutable offsets/paths updated across goroutines.
-  - Fix: consistent locking around shared state or single-owner goroutine messages.
-
-- [ ] **Improve history performance for large report folders**
-  - Current behavior reads many JSON files into memory.
-  - Fix: index/cache metadata file + incremental updates.
-
-- [ ] **Document and enforce API schema versions for import/export**
-  - Prevent future breakage when config/session schema evolves.
-
-## P2
-
-- [ ] **Add graceful backup policy controls**
-  - Keep count/retention period configurable instead of hardcoded values.
-
-- [ ] **Improve sorting consistency in API responses**
-  - Example: items list from map iteration is unsorted.
+- Service layer between HTTP handlers and core packages.
+- Normalize `Value` vs `Valor` naming across backend/frontend.
+- Reduce race risk in tailers (`Tailer`, `FileTailer`) — consistent locking around shared offsets.
+- Improve history performance for large report folders (index/cache metadata instead of reading all JSON).
+- Document/enforce API schema versions for import/export.
+- Graceful backup retention policy controls (prune count is hardcoded at 48).
+- Sorting consistency in API responses (items list from map iteration is unsorted).
+- Tests for `internal/logtail`, `internal/prices`, `internal/cdn`, `cmd/gorgon` (still untested).
+- Race-check CI (`go test -race ./...`) and frontend smoke tests.
 
 ---
 
-## 3) Test & quality improvements
+## Suggested order for the open items
 
-- [ ] **Add tests for packages with no tests**
-  - `internal/config`, `internal/logtail`, `internal/prices`, `internal/cdn`, `cmd/gorgon`.
-
-- [ ] **Add concurrency/race checks in CI**
-  - Run `go test -race ./...` on CI.
-
-- [ ] **Add handler tests for config update semantics, session ID validation, SSE behavior**
-
-- [ ] **Add frontend smoke tests**
-  - At minimum: view switch, start/stop session flow, settings save/load, history export.
-
----
-
-## 4) Expansion ideas WITHOUT VIP (all local/log/CDN-based)
-
-These features can be built with current data sources (chat logs, Player.log, CDN data, local files) and do **not** require VIP-only gameplay features.
-
-## High value
-
-- [ ] **Sell route optimizer by current zone**
-  - Combine session loot + `zone` + trader capacities to suggest nearest profitable sell path.
-
-- [ ] **"What to keep" smart presets**
-  - User rule sets by keyword/skill/crafting relevance (e.g., always keep alchemy mats).
-
-- [ ] **Drop-rate confidence view**
-  - Add confidence intervals and minimum-session warnings (not just averages).
-
-- [ ] **Session comparison mode**
-  - Compare two sessions/zones: value/hour, deaths, loot quality, favorite NPC gains.
-
-- [ ] **Combat efficiency panel**
-  - Ability usage + hit rate + estimated DPS trend over session duration.
-
-## Medium value
-
-- [ ] **Crafting ingredient demand from loot stream**
-  - Flag looted items used in tracked recipes.
-
-- [ ] **Auto-tag and note templates**
-  - Auto-note items by verdict/category (e.g., "consign", "favor for <npc>").
-
-- [ ] **Zone-specific NPC quick list in overlay**
-  - Show nearby favor/sell NPC recommendations live.
-
-- [ ] **Session goals/checklist**
-  - User-defined targets: total gold, item count, specific drops.
-
-## Nice-to-have
-
-- [ ] **Import/export for only one feature scope**
-  - Separate exports for prices, trader limits, favor-progress.
-
-- [ ] **Offline mode indicator and cache status UI**
-  - Show CDN cache version age and refresh controls.
-
----
-
-## 5) Suggested execution order (practical)
-
-1. Fix config patch semantics + validation.
-2. Fix SSE fan-out + ping goroutine behavior.
-3. Add session ID path validation.
-4. Split `server.go` and add handler tests.
-5. Modularize frontend state by view.
-6. Ship first non-VIP expansion: **zone-aware sell route optimizer**.
-
----
-
-## Validation run
-
-- Command run: `go test ./...`
-- Result: pass
+1. Reduce tailer race risk + add race-check CI.
+2. Add tests for `logtail`/`prices`/`cdn`.
+3. Service layer + naming normalization.
+4. History performance index; schema-versioned import/export.

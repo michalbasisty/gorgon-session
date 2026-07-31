@@ -1606,6 +1606,68 @@ td.route {
   border-color: var(--accent);
 }
 
+/* ===== Drop Rates view ===== */
+.drop-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 8px 12px 0;
+  padding: 4px 10px;
+  background: var(--accent-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.drop-banner-x {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.drop-banner-x:hover { color: var(--danger, #e74c3c); }
+.drop-toggle {
+  background: none;
+  border: none;
+  padding: 0 4px 0 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+.drop-toggle:hover { color: var(--accent); }
+.drop-detail { display: none; }
+.drop-detail.open { display: table-row; }
+.drop-detail > td {
+  background: var(--row-alt);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.drop-detail-block {
+  font-size: 12px;
+  color: var(--fg);
+  margin: 2px 0;
+}
+.drop-detail-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.drop-detail-count { color: var(--muted); }
+.drop-source-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+.drop-source-link:hover { color: var(--fg); }
+
 /* ===== Modals ===== */
 /* Modal */
 .modal {
@@ -1797,6 +1859,21 @@ td.route {
   opacity: 1;
 }
 .hide-btn:hover { color: #e74c3c; background: rgba(231,76,60,0.1); }
+.bulk-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.2s, color 0.15s, background 0.15s;
+}
+.trader-area-header:hover .bulk-btn {
+  opacity: 1;
+}
+.bulk-btn:hover { color: var(--accent); background: var(--accent-dim); }
 .save-btn {
   background: var(--accent);
   color: #fff;
@@ -2057,8 +2134,36 @@ td.route {
   padding-left: 36px;
 }
 .trader-name {
-  flex: 0 0 180px;
+  flex: 0 0 160px;
   font-weight: 600;
+}
+.trader-history-link {
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+  border-bottom: 1px dashed var(--muted);
+  transition: border-color 0.15s, color 0.15s;
+}
+.trader-history-link:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.trader-types {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  margin-right: 8px;
+}
+.type-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  margin: 2px;
+  white-space: nowrap;
 }
 .trader-capacity {
   flex: 1;
@@ -2118,6 +2223,40 @@ td.route {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.3px;
+}
+
+/* Schedule table */
+.schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.schedule-table thead th {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 2px solid var(--border);
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+.schedule-table tbody td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.schedule-table tbody tr:hover {
+  background: var(--accent-dim);
+}
+.schedule-table tbody tr:nth-child(even) {
+  background: var(--row-alt);
+}
+.schedule-table tbody tr:nth-child(even):hover {
+  background: var(--accent-dim);
+}
+.schedule-now td {
+  color: #e74c3c;
+  font-weight: 600;
 }
 
 /* ===== Warcache Solver ===== */
@@ -2628,3 +2767,654 @@ body.compact header { padding: 8px 16px; }
 
 /* Utility: hide any element. Defined last to win cascade. */
 .hidden { display: none !important; }
+
+/* ===== Compare / Breakdown / Trends / Profit ===== */
+.diff-pos { color: var(--favor); font-weight: 600; }
+.diff-neg { color: #e74c3c; font-weight: 600; }
+.diff-zero { color: var(--muted); }
+
+.modal-body h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.bar-label {
+  flex: 0 0 200px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bar-track {
+  flex: 1;
+  height: 14px;
+  background: var(--bg);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+.bar-val {
+  flex: 0 0 90px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trends-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 180px;
+  padding: 8px 4px 0;
+}
+.trends-bar-wrap {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  cursor: help;
+}
+.trends-bar {
+  background: linear-gradient(180deg, var(--accent), var(--accent-dim));
+  border-radius: 2px 2px 0 0;
+  min-height: 2px;
+}
+.trends-meta {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 8px;
+}
+
+.pp-trends {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
+  line-height: 1;
+}
+.pp-trends:hover { color: var(--accent); background: var(--accent-dim); }
+
+.value-unknown {
+  color: var(--muted);
+  font-size: 11px;
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.profit-calculator {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.profit-calculator h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+.crafting-controls select {
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* ===== Route Plan panel (Tracker view) ===== */
+.route-plan-panel {
+  margin-bottom: 12px;
+  background: var(--row);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.route-plan-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  user-select: none;
+}
+.route-plan-panel summary:hover { color: var(--accent); }
+.route-plan-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+.route-plan-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.route-plan-controls select {
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.route-plan-block-title {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.route-plan-block-title:first-child { margin-top: 0; }
+.route-plan-block-title.favor { color: var(--favor); }
+.route-plan-block-title.sell { color: var(--sell-vendor); }
+.route-plan-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  align-items: baseline;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--row-alt);
+  font-size: 13px;
+}
+.route-plan-item:last-child { border-bottom: none; }
+.route-plan-item.highlight {
+  background: var(--accent-dim);
+  outline: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+.route-plan-item-name { font-weight: 600; }
+.route-plan-count { color: var(--muted); font-size: 12px; }
+.route-plan-item-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 12px;
+}
+.route-plan-reason { color: var(--muted); }
+.route-plan-target { color: var(--fg); }
+.route-plan-area { color: var(--muted); font-size: 11px; }
+.route-plan-more { color: var(--muted); font-style: italic; }
+.route-plan-muted { color: var(--muted); }
+.route-plan-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+  cursor: pointer;
+}
+.route-plan-trader { white-space: nowrap; }
+.route-plan-empty {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ===== Trader-centric route plan cards ===== */
+.route-trader-card {
+  margin-top: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.route-trader-card:first-of-type { margin-top: 4px; }
+.route-trader-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  user-select: none;
+  background: var(--row-alt);
+}
+.route-trader-head:hover { color: var(--accent); }
+.route-trader-distance {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.route-trader-area {
+  padding: 6px 10px 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.route-section-title {
+  margin: 8px 10px 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+.route-section-title.sell { color: var(--sell-vendor); }
+.route-section-title.favor { color: var(--favor); }
+.route-trader-card .route-plan-item {
+  padding: 3px 10px;
+  justify-content: space-between;
+}
+.route-trader-card .route-plan-item-name { overflow-wrap: anywhere; }
+.route-plan-loading {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ===== Overlay Mode (body.overlay-mode) =====
+   Compact layout for the native always-on-top window (/ ?overlay=1).
+   Everything here is scoped under body.overlay-mode; normal mode is untouched.
+   html can't be matched as a descendant of body.overlay-mode, so the :has()
+   rules below are the scoped equivalent: they apply only while an
+   .overlay-mode body exists, and never in normal browser mode. */
+html:has(body.overlay-mode) {
+  height: 100%; /* viewport fill: html+body always cover the window edge-to-edge */
+  background: #0b0d12; /* solid — the native window owns the alpha */
+  scrollbar-width: thin;
+  scrollbar-color: var(--overlay-scroll-thumb) var(--bg);
+  --overlay-scroll-thumb: #2a2e38;
+  --overlay-scroll-thumb-hover: #3a3f4b;
+}
+html:has(body.overlay-mode[data-theme="light"]) {
+  background: #f5f6f8;
+  --bg: #f5f6f8;
+  --overlay-scroll-thumb: #c9cdd6;
+  --overlay-scroll-thumb-hover: #a5abb8;
+}
+body.overlay-mode {
+  font-size: 13px;
+  padding-top: 30px; /* room for the fixed top menu bar */
+  padding-bottom: 30px; /* room for the fixed bottom menu bar */
+  background: #0b0d12; /* solid — the native window owns the alpha */
+  overflow-x: hidden; /* the 460px window must never scroll sideways as a whole */
+  min-height: 100%; /* paint the full window height — no unpainted strip below */
+}
+
+/* Fixed top bar: top menu (views used while playing) + drag fill. Visible
+   only in overlay mode; the [hidden] attribute keeps it out of normal mode. */
+body.overlay-mode .overlay-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  display: flex;
+  align-items: stretch;
+  background: #0e1016; /* solid — translucent here white-mixes in WebView2 */
+  border-bottom: 1px solid var(--border);
+  z-index: 300;
+  -webkit-app-region: drag;
+}
+body.overlay-mode .overlay-top {
+  display: flex;
+  align-items: stretch;
+  -webkit-app-region: no-drag;
+}
+body.overlay-mode .overlay-top-nav {
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-app-region: no-drag;
+}
+/* Brand text doubles as the Home/Dashboard button. */
+body.overlay-mode .overlay-brand {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  color: var(--accent);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+body.overlay-mode .overlay-brand:hover { color: var(--fg); background: var(--accent-dim); }
+body.overlay-mode .overlay-drag { flex: 1; display: flex; align-items: center; justify-content: center; }
+body.overlay-mode .overlay-drag-grip {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* Fixed bottom bar: remaining views + see-through/close controls. */
+body.overlay-mode .overlay-bottom {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  display: flex;
+  align-items: stretch;
+  background: #0e1016; /* solid — translucent here white-mixes in WebView2 */
+  border-top: 1px solid var(--border);
+  z-index: 300;
+  -webkit-app-region: drag;
+}
+body.overlay-mode .overlay-bottom-nav {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-app-region: no-drag;
+}
+body.overlay-mode .overlay-controls {
+  display: flex;
+  gap: 6px;
+  padding: 3px 6px;
+  flex: 0 0 auto;
+  -webkit-app-region: no-drag;
+}
+body.overlay-mode .overlay-controls button {
+  background: var(--accent-dim);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 4px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+body.overlay-mode .overlay-controls button:hover { color: var(--fg); border-color: var(--accent); }
+body.overlay-mode .overlay-controls button.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+body.overlay-mode #overlay-close:hover { color: var(--danger); border-color: var(--danger); }
+
+/* Resize grip: bottom-right corner of the window, right of the close button.
+   Dragging it calls the native overlayResize; it must not be a drag region
+   (the bar is), and it's hidden with the bar outside overlay mode. */
+body.overlay-mode .overlay-resize-grip {
+  flex: 0 0 auto;
+  width: 16px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 2px;
+  color: var(--muted);
+  opacity: 0.5;
+  cursor: nwse-resize;
+  -webkit-app-region: no-drag;
+  transition: color 0.15s, opacity 0.15s;
+}
+body.overlay-mode .overlay-resize-grip:hover { color: var(--accent); opacity: 1; }
+body.overlay-mode .overlay-resize-grip svg { display: block; }
+
+/* Split-menu nav buttons live in both bars; the same .nav-item
+   click/keyboard/aria wiring drives them as the sidebar items. */
+body.overlay-mode .overlay-nav {
+  flex: 0 0 auto;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+body.overlay-mode .overlay-nav:hover { background: var(--accent-dim); color: var(--fg); }
+body.overlay-mode .overlay-nav.active {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-bottom-color: var(--accent);
+}
+
+/* Click-through visual state (actual pass-through is handled by the native host).
+   Use filter, not opacity: page opacity would re-introduce the translucent-pixel
+   artifact in WebView2. The native window also drops its alpha in this mode. */
+body.overlay-mode.clickthrough { filter: brightness(0.82); }
+
+/* Sidebar is replaced by the split bars in overlay mode. */
+body.overlay-mode .sidebar { display: none; }
+
+body.overlay-mode .main-content { margin-left: 0; min-height: 0; }
+body.overlay-mode main { padding: 12px; max-width: none; overflow-x: hidden; }
+
+/* The bars eat 30px top + 30px bottom: size .app to the remaining space so
+   short views don't force a pointless scrollbar or dead strip below content. */
+body.overlay-mode .app { min-height: calc(100vh - 60px); }
+
+/* Scrollbars: thin + dark so the right edge blends with the background instead
+   of the OS-default slab. Scoped to overlay mode (viewport via the html :has()
+   rules above, inner scrollers via the descendant selector); still usable —
+   8px wide with a visible thumb. Standard properties are the Chromium 121+
+   path, the ::-webkit-scrollbar pseudo-elements the fallback/older path. */
+html:has(body.overlay-mode)::-webkit-scrollbar,
+body.overlay-mode *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+html:has(body.overlay-mode)::-webkit-scrollbar-track,
+body.overlay-mode *::-webkit-scrollbar-track { background: var(--bg); }
+html:has(body.overlay-mode)::-webkit-scrollbar-thumb,
+body.overlay-mode *::-webkit-scrollbar-thumb {
+  background: var(--overlay-scroll-thumb);
+  border-radius: 4px;
+}
+html:has(body.overlay-mode)::-webkit-scrollbar-thumb:hover,
+body.overlay-mode *::-webkit-scrollbar-thumb:hover { background: var(--overlay-scroll-thumb-hover); }
+html:has(body.overlay-mode)::-webkit-scrollbar-corner,
+body.overlay-mode *::-webkit-scrollbar-corner { background: var(--bg); }
+
+/* App header: allow wrap so the tracker controls fit 460px; keep it below the top bar. */
+body.overlay-mode header {
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  top: 30px;
+}
+body.overlay-mode header h1 { font-size: 14px; }
+body.overlay-mode .controls { gap: 6px; flex-wrap: wrap; }
+body.overlay-mode .controls input { width: 140px; padding: 5px 10px; }
+body.overlay-mode .controls button { padding: 5px 12px; font-size: 12px; }
+body.overlay-mode #elapsed { min-width: 0; font-size: 11px; }
+
+/* Grids: 1-2 columns instead of 3-4 */
+body.overlay-mode .dash-widgets { flex-direction: column; gap: 10px; }
+body.overlay-mode .dash-widget.size-half { flex: 1 1 100%; min-width: 0; }
+body.overlay-mode .summary-grid { grid-template-columns: 1fr; gap: 10px; }
+body.overlay-mode .history-detail-stats { grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+body.overlay-mode .items-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+
+/* Tighter card padding */
+body.overlay-mode .summary-section { padding: 12px; }
+body.overlay-mode .stat-card { padding: 10px; }
+body.overlay-mode .stat-value { font-size: 20px; }
+body.overlay-mode .dash-widget-body { padding: 10px; }
+body.overlay-mode .item-card { padding: 8px 10px; }
+body.overlay-mode .dash-header { margin-bottom: 10px; }
+
+/* Toolbars: allow wrapping instead of overflowing 460px */
+body.overlay-mode .tracker-controls,
+body.overlay-mode .history-toolbar,
+body.overlay-mode .trader-search-bar,
+body.overlay-mode .manual-loot-form,
+body.overlay-mode .history-detail-header { flex-wrap: wrap; }
+
+/* Modals: keep inside a 460px window */
+body.overlay-mode .modal-content { width: 92%; max-width: 92vw; }
+body.overlay-mode .modal-header { padding: 12px; }
+body.overlay-mode .modal-body { padding: 12px; }
+
+/* ===== Overlay Mode: no horizontal overflow in the 460px window ===== */
+
+/* Wide tables scroll inside themselves; the page never scrolls sideways. */
+body.overlay-mode table {
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+body.overlay-mode td,
+body.overlay-mode th { padding: 6px 8px; }
+
+/* Loot table: keep time / item / # / verdict / actions, drop route + note.
+   display:table restores proper internal table layout (display:block on the
+   parent <table> can collapse rows in the WebView2 renderer). */
+body.overlay-mode #loot {
+  display: table;
+  white-space: normal;
+}
+body.overlay-mode #loot th:nth-child(5),
+body.overlay-mode #loot th:nth-child(7),
+body.overlay-mode #loot td:nth-child(5),
+body.overlay-mode #loot td:nth-child(7) { display: none; }
+
+/* Drop Rates table in the 460px window: Item ate the width and pushed Drops
+   From + the chance columns off-screen (the table scrolls sideways with no
+   affordance). Drop the Overall column — it stays one click away in the
+   expanded detail row — let text wrap so the remaining three columns always
+   fit, and ellipsis long source names. */
+body.overlay-mode #drop-list table { white-space: normal; }
+body.overlay-mode #drop-list th:nth-child(4),
+body.overlay-mode #drop-list td:nth-child(4) { display: none; }
+body.overlay-mode #drop-list .drop-source-link {
+  display: inline-block;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+/* Whole-row expand target (overlay only): the ▸ is a tiny target in a small
+   window; the delegated click handler treats any non-button row click as the
+   toggle. */
+body.overlay-mode #drop-list tbody tr { cursor: pointer; }
+
+/* Trader rows: top row wraps, name shrinks, badges + "Remaining:" label go. */
+body.overlay-mode .trader-row-top { flex-wrap: wrap; gap: 6px 10px; }
+body.overlay-mode .trader-name { flex: 1 1 120px; min-width: 0; }
+body.overlay-mode .trader-types { display: none; }
+body.overlay-mode .capacity-label { display: none; }
+body.overlay-mode .trader-capacity { flex: 0 1 auto; }
+body.overlay-mode .trader-reset { flex: 0 1 auto; }
+body.overlay-mode .trader-row-bottom { padding-left: 0; gap: 8px; }
+body.overlay-mode .trader-row-bottom input { width: 56px; }
+body.overlay-mode .trader-row-bottom label:has(.limit-input) { display: none; }
+body.overlay-mode .trader-area-header { padding: 8px 10px; font-size: 13px; }
+body.overlay-mode .trader-area-content { padding: 4px; }
+
+/* Toolbars: search inputs go full width, buttons wrap beneath them. */
+body.overlay-mode .trader-search-bar input,
+body.overlay-mode .tracker-controls input,
+body.overlay-mode .tracker-controls select { flex: 1 1 100%; }
+body.overlay-mode .trader-search-bar .filter-btn { flex: 1 1 auto; padding: 4px 8px; font-size: 11px; }
+
+/* Other toolbar rows that can push past 460px */
+body.overlay-mode .crafting-controls,
+body.overlay-mode .player-prices-add,
+body.overlay-mode .settings-actions-row,
+body.overlay-mode .history-detail-actions { flex-wrap: wrap; }
+
+/* Modals: never wider than the window (inline max-widths like 640px would
+   overflow 460px), body content scrolls internally. */
+body.overlay-mode .modal-content {
+  width: 92% !important;
+  max-width: 92vw !important;
+  overflow: hidden;
+}
+body.overlay-mode .modal-body { overflow-x: auto; }
+
+/* ===== Overlay Settings Form (Settings view) =====
+   Compact 2-column grid that collapses to a single column inside the
+   460px overlay window. Reuses the standard .form-group controls. */
+.overlay-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+  max-width: 600px;
+  margin-top: 12px;
+}
+.overlay-form-grid .form-group { margin-bottom: 0; }
+.overlay-form-grid .form-group.row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.overlay-form-grid .form-group.row label { margin: 0; }
+.overlay-form-grid .form-group.row input[type="checkbox"] { width: auto; }
+.overlay-form-grid input[type="range"] {
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.overlay-form-grid input[type="color"] {
+  padding: 2px 4px;
+  height: 38px;
+  max-width: 140px;
+  cursor: pointer;
+}
+.overlay-slider-value { color: var(--accent); font-weight: 700; }
+body.overlay-mode .overlay-form-grid { grid-template-columns: 1fr; }
+
+/* ===== Overlay Light Theme =====
+   The native window loads /?overlay=1&theme=light&accent=<hex>; the inline
+   script sets body[data-theme="light"] and overrides --accent on the body.
+   Scoped to overlay mode only — normal browser mode is untouched. */
+body.overlay-mode[data-theme="light"] {
+  --bg: #f5f6f8;
+  --fg: #1a1d23;
+  --muted: #667085;
+  --accent-dim: rgba(91, 147, 255, 0.15);
+  --accent-dim: color-mix(in srgb, var(--accent) 15%, white); /* follows the custom accent */
+  --border: #d9dde3;
+  --row: #ffffff;
+  --row-alt: #eef0f3;
+  --sidebar-bg: #eef0f4;
+  background: #f5f6f8;
+}
+/* Top/bottom bars hardcode dark; re-tint solid for the light theme (no alpha —
+   translucent pixels white-mix in WebView2). */
+body.overlay-mode[data-theme="light"] .overlay-bar,
+body.overlay-mode[data-theme="light"] .overlay-bottom {
+  background: #f0f2f5;
+}

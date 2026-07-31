@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/michalbasisty/gorgon-session/internal/cdn"
 )
@@ -31,6 +32,8 @@ type Engine struct {
 	npcs         []npcRow
 	byKeyword    map[string][]int // npc pref keyword -> npc row indexes
 	playerPrices map[string]float64
+
+	mu sync.RWMutex // guards playerPrices (written by SetPlayerPrices, read by ResolveItem)
 }
 
 type npcRow struct {
@@ -120,6 +123,8 @@ func (e *Engine) Resolve(itemName string, itemKeywords []string, itemValue float
 
 // ResolveItem produces a decision for a full item, including composite keyword matching.
 func (e *Engine) ResolveItem(item cdn.Item) Decision {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	d := Decision{Item: item.Name}
 	kwSet := toSet(item.Keywords)
 
@@ -351,5 +356,7 @@ func (e *Engine) NPCList() []NPCInfo {
 
 // SetPlayerPrices updates the player price overrides.
 func (e *Engine) SetPlayerPrices(prices map[string]float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.playerPrices = prices
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/michalbasisty/gorgon-session/internal/favor"
 	"github.com/michalbasisty/gorgon-session/internal/logtail"
 	"github.com/michalbasisty/gorgon-session/internal/loot"
+	"github.com/michalbasisty/gorgon-session/internal/overlay"
 	"github.com/michalbasisty/gorgon-session/internal/playerlog"
 	"github.com/michalbasisty/gorgon-session/internal/server"
 	"github.com/michalbasisty/gorgon-session/internal/session"
@@ -43,8 +44,30 @@ func main() {
 		lootRe   = flag.String("loot-regex", "", "override loot-line regex (capture groups: 1=name, 2=count?)")
 		version  = flag.String("version", "", "force a specific CDN version (e.g. v480) instead of auto-detect")
 		testName = flag.String("test-loot", "", "test the loot regex against a pasted chat-log line, then exit")
+		overlayF = flag.Bool("overlay", false, "run the native always-on-top HUD overlay (polls the local API) and exit")
 	)
 	flag.Parse()
+
+	// The overlay is spawned by the dashboard's /api/overlay/spawn endpoint and
+	// polls this app's HTTP API, so it must run BEFORE any config/CDN/HTTP init.
+	if *overlayF {
+		url := "http://127.0.0.1:7777"
+		if a := *addr; a != "" {
+			if strings.Contains(a, "://") {
+				url = a
+			} else {
+				if strings.HasPrefix(a, ":") {
+					a = "127.0.0.1" + a
+				}
+				url = "http://" + a
+			}
+		}
+		if err := overlay.Run(url); err != nil {
+			log.Printf("overlay: %v", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -166,22 +189,66 @@ func main() {
 	plParser := playerlog.New()
 	plTail := logtail.NewFileTailer(cfg.PlayerLogPath)
 	_ = plTail.Start(ctx)
+
+	// Seed the current zone: the tailer starts at EOF and PG only logs zone
+	// lines on zone change, so scan Player.log for the LAST zone line. The
+	// last change can be far from EOF (player idles in one zone for hours),
+	// so read the whole file once — 10-20MB at startup is fine.
+	if cfg.PlayerLogPath != "" {
+		if f, err := os.Open(cfg.PlayerLogPath); err == nil {
+			if data, err := io.ReadAll(f); err == nil {
+				zone := ""
+				for _, ln := range strings.Split(string(data), "\n") {
+					if ev := plParser.ParseLine(ln); ev != nil && ev.Kind == playerlog.KindZone {
+						zone = ev.Zone
+					}
+				}
+				if zone != "" {
+					mgr.SetZone(zone)
+				}
+			}
+			f.Close()
+		}
+	}
+
 	go playerPipeline(ctx, plTail, plParser, mgr)
 
 	if cfg.PlayerLogPath != "" {
 		log.Printf("watching Player.log: %s", cfg.PlayerLogPath)
 	}
 
-	// Initialize trader manager
+	// Initialize trader manager with auto-refresh
 	traderFile := filepath.Join(filepath.Dir(cfg.ReportDir), "traders.json")
 	traderMgr := trader.New(traderFile)
 	if err := traderMgr.Load(); err != nil {
 		log.Printf("warning: failed to load traders: %v", err)
 	}
+	traderMgr.Start(ctx)
+
+	// Auto-populate traders from CDN: any NPC with Store/Consignment that isn't tracked yet.
+	for _, n := range npcs {
+		hasStore := false
+		for _, svc := range n.Services {
+			t := strings.ToLower(strings.TrimSpace(svc.Type))
+			if t == "store" || t == "consignment" {
+				hasStore = true
+				break
+			}
+		}
+		if !hasStore {
+			continue
+		}
+		if traderMgr.Get(n.InternalName) == nil {
+			_ = traderMgr.Ensure(n.InternalName, n.AreaFriendly, 7, 0)
+		}
+	}
+	if err := traderMgr.Save(); err != nil {
+		log.Printf("warning: save auto-populated traders: %v", err)
+	}
 
 	// Pass the embedded web FS directly; the embed directive in web/embed.go
 	// uses bare filenames so paths inside the FS have no "web/" prefix.
-	srv := server.New(cfg, mgr, engine, web.Files, t, plTail, parser, traderMgr, items, ver, areaIdx, skills, recipes, abilities)
+	srv := server.New(cfg, mgr, engine, web.Files, t, plTail, parser, traderMgr, items, ver, npcs, areaIdx, skills, recipes, abilities)
 	h := srv.Mount()
 	hs := &http.Server{
 		Addr:              cfg.HTTPAddr,

@@ -17,6 +17,17 @@ async function renderSettingsView() {
   $('#settings-sell-value-threshold').value = cfg.sell_value_threshold || 50;
   $('#settings-notification-threshold').value = cfg.notification_threshold || 500;
   $('#settings-backup-enabled').checked = cfg.backup_enabled !== false;
+
+  // Overlay settings (cfg.overlay, added by the native-window lane)
+  const ov = cfg.overlay || {};
+  presetOverlayControls({
+    opacity: ov.opacity ?? OVERLAY_DEFAULTS.opacity,
+    click_through_opacity: ov.click_through_opacity ?? OVERLAY_DEFAULTS.click_through_opacity,
+    click_through_by_default: ov.click_through_by_default ?? OVERLAY_DEFAULTS.click_through_by_default,
+    position: ov.position || OVERLAY_DEFAULTS.position,
+    theme: ov.theme || OVERLAY_DEFAULTS.theme,
+    accent_color: ov.accent_color || OVERLAY_DEFAULTS.accent_color
+  });
   
   // Load player prices from server config
   state.playerPrices = cfg.player_prices || {};
@@ -59,6 +70,65 @@ $('#settings-form').addEventListener('submit', async (e) => {
   }
 });
 
+// ==================== Overlay settings ====================
+// Contract (shared with the native window lane): cfg.overlay =
+// { opacity, click_through_opacity, click_through_by_default, position,
+//   theme, accent_color }. The API merges partial updates, so posting just
+// the overlay object is fine. Changes apply the next time the overlay opens.
+
+const OVERLAY_DEFAULTS = {
+  opacity: 98,
+  click_through_opacity: 78,
+  click_through_by_default: false,
+  position: 'bottom-right',
+  theme: 'dark',
+  accent_color: '#3FB950'
+};
+
+function presetOverlayControls(ov) {
+  $('#overlay-opacity').value = ov.opacity;
+  $('#overlay-click-opacity').value = ov.click_through_opacity;
+  $('#overlay-click-through').checked = !!ov.click_through_by_default;
+  $('#overlay-position').value = ov.position;
+  $('#overlay-theme').value = ov.theme;
+  $('#overlay-accent').value = ov.accent_color;
+  $('#overlay-opacity-value').textContent = ov.opacity + '%';
+  $('#overlay-click-opacity-value').textContent = ov.click_through_opacity + '%';
+}
+
+// Live % readouts next to the sliders
+$('#overlay-opacity')?.addEventListener('input', e => { $('#overlay-opacity-value').textContent = e.target.value + '%'; });
+$('#overlay-click-opacity')?.addEventListener('input', e => { $('#overlay-click-opacity-value').textContent = e.target.value + '%'; });
+
+async function saveOverlaySettings(overlay) {
+  try {
+    // api() toasts the server error text itself when the POST fails
+    return !!(await api('/api/config', 'POST', { overlay }));
+  } catch (err) {
+    toast('Failed to save overlay settings: ' + (err && err.message || err), 'error');
+    return false;
+  }
+}
+
+$('#overlay-save')?.addEventListener('click', async () => {
+  const overlay = {
+    opacity: parseInt($('#overlay-opacity').value, 10),
+    click_through_opacity: parseInt($('#overlay-click-opacity').value, 10),
+    click_through_by_default: $('#overlay-click-through').checked,
+    position: $('#overlay-position').value,
+    theme: $('#overlay-theme').value,
+    accent_color: $('#overlay-accent').value
+  };
+  if (await saveOverlaySettings(overlay)) toast('Overlay settings saved', 'success');
+});
+
+$('#overlay-reset')?.addEventListener('click', async () => {
+  if (await saveOverlaySettings(OVERLAY_DEFAULTS)) {
+    presetOverlayControls(OVERLAY_DEFAULTS);
+    toast('Overlay settings reset to defaults', 'success');
+  }
+});
+
 // Player prices management
 let ppFilter = '';
 function renderPlayerPrices() {
@@ -85,6 +155,7 @@ function renderPlayerPrices() {
     item.innerHTML = `
       <span class="pp-name">${escapeHtml(name)}</span>
       <span class="pp-price">${price.toFixed(0)}g</span>
+      <button class="pp-trends" title="Price history" onclick="showPriceTrends('${escapeHtml(name).replace(/'/g, "\\'")}')">📈</button>
       <button class="pp-delete" aria-label="Delete ${escapeHtml(name)}">×</button>
     `;
     container.appendChild(item);
@@ -411,7 +482,7 @@ $('#warcache-use-suggestion')?.addEventListener('click', () => {
 $('#open-overlay')?.addEventListener('click', () => { openOverlay(); });
 
 $('#copy-overlay-url')?.addEventListener('click', () => {
-  const url = window.location.origin + '/overlay';
+  const url = window.location.origin + '/?overlay=1';
   navigator.clipboard.writeText(url).then(() => {
     toast('Overlay URL copied', 'success');
   }).catch(() => {
@@ -438,3 +509,97 @@ $('#warcache-reset')?.addEventListener('click', () => {
   warcacheUpdateSuggestion();
   warcacheRenderHistory();
 });
+
+// ==================== Price Trends ====================
+
+// Modal with a pure CSS bar chart of the last 50 price observations.
+window.showPriceTrends = async function(name) {
+  const data = await api('/api/prices/trends?name=' + encodeURIComponent(name));
+  if (!data) return;
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.innerHTML = `
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>📈 ${escapeHtml(data.item || name)} — price trends</h3>
+        <button class="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        ${entries.length === 0
+          ? '<div class="summary-empty">No price observations yet</div>'
+          : `<div class="trends-chart" id="trends-chart"></div>
+             <div class="trends-meta">${entries.length} observation${entries.length !== 1 ? 's' : ''} (last 50) · hover a bar for details</div>`}
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.querySelector('.modal-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+  if (entries.length === 0) return;
+
+  const max = Math.max(...entries.map(e => e.price || 0), 1);
+  const chart = modal.querySelector('#trends-chart');
+  chart.innerHTML = entries.map(e => {
+    const h = Math.max(2, ((e.price || 0) / max) * 100);
+    const label = new Date(e.t).toLocaleString();
+    return `<div class="trends-bar-wrap" title="${escapeHtml(label)} — ${(e.price || 0).toFixed(0)}g (qty ${e.qty || 0})">
+      <div class="trends-bar" style="height:${h.toFixed(1)}%"></div>
+    </div>`;
+  }).join('');
+};
+
+// ==================== Profit Calculator ====================
+
+// Skill select is populated lazily because state.skills loads asynchronously.
+function ensureProfitSkills() {
+  const select = $('#profit-skill');
+  if (!select || select.options.length > 1) return;
+  for (const s of Object.keys(state.skills || {}).sort()) {
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    select.appendChild(opt);
+  }
+}
+
+window.calcProfit = async function() {
+  ensureProfitSkills();
+  const skill = $('#profit-skill')?.value || '';
+  const maxLevel = parseInt($('#profit-max-level')?.value) || 0;
+  const container = $('#profit-results');
+  if (!container) return;
+  container.innerHTML = '<div class="summary-empty" style="padding:12px">Calculating...</div>';
+  const data = await api(`/api/crafting/profit?skill=${encodeURIComponent(skill)}&max_level=${maxLevel}`);
+  if (!data) { container.innerHTML = ''; return; }
+  const recipes = Array.isArray(data.recipes) ? data.recipes : [];
+  if (recipes.length === 0) {
+    container.innerHTML = '<div class="summary-empty" style="padding:12px">No recipes found</div>';
+    return;
+  }
+  container.innerHTML = `<table class="schedule-table"><thead><tr>
+    <th>Recipe</th><th>Lv</th><th>Ingredients</th><th style="text-align:right">Cost</th>
+    <th style="text-align:right">Sell</th><th style="text-align:right">Profit</th><th style="text-align:right">Margin</th>
+  </tr></thead><tbody>
+    ${recipes.map(r => {
+      const ings = (r.ingredients || [])
+        .map(i => `${escapeHtml(i.name)} x${i.qty}${i.cost ? ` (${i.cost.toFixed(0)}g)` : ''}`)
+        .join(', ') || '—';
+      const unknown = r.cost_unknown ? ' <span class="value-unknown">value unknown</span>' : '';
+      return `<tr>
+        <td>${escapeHtml(r.name || 'Unnamed')}${unknown}</td>
+        <td>${r.level ?? '?'}</td>
+        <td style="color:var(--muted);font-size:12px">${ings}</td>
+        <td style="text-align:right">${(r.ingredients_cost || 0).toFixed(0)}g</td>
+        <td style="text-align:right">${(r.sell_value || 0).toFixed(0)}g</td>
+        <td style="text-align:right;font-weight:600;color:${r.profit >= 0 ? 'var(--favor)' : '#e74c3c'}">${r.profit >= 0 ? '+' : ''}${r.profit.toFixed(0)}g</td>
+        <td style="text-align:right">${r.cost_unknown ? '—' : (r.margin_pct ? r.margin_pct.toFixed(1) + '%' : '—')}</td>
+      </tr>`;
+    }).join('')}
+  </tbody></table>`;
+  toast(`Top ${recipes.length} recipes by profit`, 'info');
+};
+
+$('#profit-calc')?.addEventListener('click', calcProfit);
+$('#profit-max-level')?.addEventListener('keydown', e => { if (e.key === 'Enter') calcProfit(); });

@@ -96,6 +96,73 @@ function renderSellList(items) {
   sharedRenderSellList($('#sell-list'), items);
 }
 
+// Combat breakdown modal. sessionId omitted → current/latest session.
+window.showCombatBreakdown = async function(sessionId) {
+  const q = sessionId ? '?session=' + encodeURIComponent(sessionId) : '';
+  const data = await api('/api/combat/breakdown' + q);
+  if (!data) return;
+  const abilities = Array.isArray(data.abilities) ? data.abilities : [];
+  const types = data.damage_types || {};
+
+  const maxDmg = Math.max(...abilities.map(a => a.total_damage || 0), 1);
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.innerHTML = `
+    <div class="modal-content" style="max-width:640px">
+      <div class="modal-header">
+        <h3>⚔ Combat Breakdown${sessionId ? '' : ' — current session'}</h3>
+        <button class="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        <h4>Abilities</h4>
+        ${abilities.length === 0
+          ? '<div class="summary-empty">No combat data for this session</div>'
+          : `<table class="schedule-table"><thead><tr>
+              <th>Ability</th><th style="text-align:right">Casts</th><th style="text-align:right">Damage</th>
+              <th style="text-align:right">%</th><th style="min-width:140px">Share</th>
+            </tr></thead><tbody>
+            ${abilities.map(a => {
+              const share = ((a.total_damage || 0) / maxDmg) * 100;
+              return `<tr>
+                <td>${escapeHtml(a.name || 'Unknown')}</td>
+                <td style="text-align:right">${a.casts || 0}</td>
+                <td style="text-align:right">${Math.round(a.total_damage || 0).toLocaleString()}</td>
+                <td style="text-align:right">${(a.pct || 0).toFixed(1)}%</td>
+                <td><div class="bar-track"><div class="bar-fill" style="width:${share.toFixed(1)}%"></div></div></td>
+              </tr>`;
+            }).join('')}
+            </tbody></table>`}
+        <h4 style="margin-top:16px">Damage Types</h4>
+        <div id="cd-types"></div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.querySelector('.modal-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+  const typeEl = modal.querySelector('#cd-types');
+  if (!typeEl) return;
+  const entries = Object.entries(types).filter(([, v]) => v > 0);
+  if (entries.length === 0) {
+    typeEl.innerHTML = '<div class="summary-empty">No damage type data</div>';
+    return;
+  }
+  const max = Math.max(...entries.map(([, v]) => v), 1);
+  typeEl.innerHTML = entries.map(([k, v]) => {
+    const pct = (v / max) * 100;
+    return `<div class="bar-row">
+      <span class="bar-label">${escapeHtml(k)}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+      <span class="bar-val">${Math.round(v).toLocaleString()}</span>
+    </div>`;
+  }).join('');
+};
+
+window.showCombatBreakdownForDetail = function() {
+  showCombatBreakdown(state.historyDetailId);
+};
+
 function renderKeepList(items) {
   sharedRenderKeepList($('#keep-list'), items);
 }

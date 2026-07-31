@@ -74,17 +74,24 @@ Manages persistent settings stored in `~/.gorgon-session/config.json`.
 - **Struct Definition**:
   ```go
   type Config struct {
-      HTTPAddr           string  `json:"http_addr"`
-      ChatLogDir         string  `json:"chat_log_dir"`
-      LootRegex          string  `json:"loot_regex"`
-      CDNRoot            string  `json:"cdn_root"`
-      VersionFile        string  `json:"version_file"`
-      FallbackVersion    string  `json:"fallback_version"`
-      CacheDir           string  `json:"cache_dir"`
-      ReportDir          string  `json:"report_dir"`
-      SellValueThreshold float64 `json:"sell_value_threshold"`
+      HTTPAddr              string            `json:"http_addr"`
+      ChatLogDir            string            `json:"chat_log_dir"`
+      LootRegex             string            `json:"loot_regex"`
+      CDNRoot               string            `json:"cdn_root"`
+      VersionFile           string            `json:"version_file"`
+      FallbackVersion       string            `json:"fallback_version"`
+      CacheDir              string            `json:"cache_dir"`
+      ReportDir             string            `json:"report_dir"`
+      SellValueThreshold    float64           `json:"sell_value_threshold"`
+      PlayerPrices          map[string]float64 `json:"player_prices"`
+      NotificationThreshold float64           `json:"notification_threshold"`
+      BackupEnabled         bool              `json:"backup_enabled"`
+      PlayerLogPath         string            `json:"player_log_path"`
+      Overlay               OverlaySettings   `json:"overlay"`
   }
   ```
+  `OverlaySettings` (read by the overlay process at startup) has:
+  `opacity` (30..100, default 98), `click_through_opacity` (default 78), `click_through_by_default` (default false), `position` (`"bottom-right"`|`"bottom-left"`|`"top-right"`|`"top-left"`), `theme` (`"dark"`|`"light"`), `accent_color` (hex, e.g. `#5b93ff`).
 - **Platform-Specific Defaults**:
   - **Windows**: `%USERPROFILE%\AppData\LocalLow\Elder Game\Project Gorgon\ChatLogs`
   - **Unix/macOS/Linux**: `~/.local/share/Elder Game/Project Gorgon/ChatLogs`
@@ -93,8 +100,8 @@ Manages persistent settings stored in `~/.gorgon-session/config.json`.
 ### 2.3. CDN Client (`internal/cdn/client.go`)
 Fetches, caches, and parses game data from `cdn.projectgorgon.com`.
 
-- **Version Detection**: Queries `http://client.projectgorgon.com/fileversion.txt` to discover the latest game version (e.g., `v480`). If unreachable, it falls back to the configured `fallback_version`.
-- **Caching Strategy**: Downloads `items.json` and `npcs.json` and saves them under `~/.gorgon-session/cache/<version>/`. Subsequent runs read directly from the local cache, ensuring offline capability and instant startup.
+- **Version Detection**: Queries `http://client.projectgorgon.com/fileversion.txt` to discover the latest game version (e.g., `v481`). If unreachable, it falls back to the configured `fallback_version`.
+- **Caching Strategy**: Downloads CDN data files (`items.json`, `npcs.json`, `areas.json`, `skills.json`, `recipes.json`, `abilities.json`) and saves them under `~/.gorgon-session/cache/<version>/`. Subsequent runs read directly from the local cache, ensuring offline capability and instant startup.
 - **Data Models**:
   - `Item`: Represents item metadata (ID, name, description, value, keywords, icon).
   - `Npc`: Represents NPC metadata, including area location, gift preferences, and services.
@@ -147,25 +154,32 @@ Manages the active dungeon session lifecycle and aggregates loot.
 ### 2.8. HTTP Server (`internal/server/server.go`)
 Exposes the REST API and streams live updates.
 
-- **Static Asset Serving**: Serves the embedded frontend assets (`index.html`, `app.js`, `style.css`) from the embedded filesystem.
+- **Static Asset Serving**: Serves the embedded frontend assets (`index.html`, the JS modules below, `style.css`) from the embedded filesystem.
 - **REST API**: Exposes endpoints to start/stop sessions, fetch current session snapshots, list past sessions, and retrieve detailed reports of past sessions.
 - **Server-Sent Events (SSE)**: The `/api/feed` endpoint establishes a persistent, one-way connection to the browser. It streams live events as they happen and sends a `:ping` every 15 seconds to keep the connection alive and prevent timeouts.
 
-### 2.9. Web Dashboard (`web/app.js`, `web/index.html`, `web/style.css`)
-A modern, dark-themed Single Page Application (SPA) built with vanilla JavaScript and CSS.
+### 2.9. Web Dashboard (`web/index.html` + `web/shared.js` + view modules)
+A modern, dark-themed Single Page Application (SPA) built with vanilla JavaScript and CSS. The dashboard is split across `web/shared.js` (core state, routing, tracker, dashboard, items, skills, combat, drop rates, overlay glue), `web/summary.js`, `web/history.js`, `web/favor-traders.js`, `web/settings-warcache.js`, and `web/init.js` (bootstrap).
 
 - **State Management**: Maintains a local `state` object tracking the active session, current view, list of NPCs, disabled NPCs, crafting recipes, and favor progress.
 - **Local Storage Integration**:
   - `disabledNPCs`: Set of NPCs the user has disabled (e.g., because they haven't unlocked them or don't want to gift them). Items routed to these NPCs will automatically fall back to the next best target or sell routing.
   - `craftingRecipes`: User-defined crafting checklists with materials and completion checkboxes.
   - `favorProgress`: Set of NPCs the user is actively tracking favor progress for.
-- **Views**:
-  - **Tracker**: Displays a live-updating table of looted items, counts, verdicts, and suggested routes.
-  - **Summary**: Aggregates session loot. Can be toggled between **By NPC** (grouped by NPC with total favor calculations) and **By Map** (grouped by game area/zone).
-  - **History**: Lists past sessions with duration, total items, unique items, and total gold value. Clicking a session opens a detailed breakdown.
-  - **Crafting**: Allows users to add custom recipes and track material checklists.
+- **Views** (top nav, in order):
+  - **Tracker**: Live-updating table of looted items, counts, verdicts, and suggested routes, plus the route planner (best sell/favor route for the current session's items).
+  - **Dashboard**: Recent sessions, loot summary, and quick stats.
+  - **Summary**: Aggregates session loot, toggleable between **By NPC** (grouped by NPC with total favor calculations) and **By Map** (grouped by game area/zone).
+  - **History**: Lists past sessions with duration, items, and gold value; clicking a session opens a detailed breakdown; CSV export and bulk export.
   - **Favor**: Lists all NPCs with search and toggle switches to disable/enable them.
-  - **Shop NPC**: Lists all shop NPCs and their locations.
+  - **Shops & Traders**: Trader locations, weekly sell capacity, refresh schedule, and trader history (CSV export/import).
+  - **Item Catalog**: Searchable item metadata from the CDN.
+  - **Warcache**: CDN cache status and refresh controls.
+  - **Skills**: Skill list with XP gain per skill.
+  - **Combat**: Ability usage, hits, and estimated DPS from Player.log + CDN ability data.
+  - **Recipes**: Recipe search with material checklists and a profit calculator.
+  - **Drop Rates**: Per-item drop chances broken down per enemy and per zone, with a zone filter.
+  - **Settings**: Live-editable settings, backup controls, and overlay settings (opacity, theme, accent, position, click-through).
 
 ---
 
@@ -220,7 +234,7 @@ The following trace shows how a single loot event flows through the system:
       | 9. SSE handler (/api/feed) receives event.
       | 10. Formats and flushes event as SSE data block to browser.
       v
-[web/app.js (Web Dashboard)]
+[web/shared.js (Web Dashboard)]
       |
       | 11. SSE EventSource receives "loot" event.
       | 12. Updates local state.
@@ -240,12 +254,12 @@ All API endpoints bind to `http://127.0.0.1:7777` by default.
 | :--- | :--- | :--- | :--- | :--- |
 | **GET** | `/` | Serves the embedded dashboard HTML. | — | `text/html` |
 | **GET** | `/style.css` | Serves the dashboard stylesheet. | — | `text/css` |
-| **GET** | `/app.js` | Serves the dashboard JavaScript. | — | `application/javascript` |
+| **GET** | `/shared.js` | Serves the dashboard JavaScript (plus `summary.js`, `history.js`, `favor-traders.js`, `settings-warcache.js`, `init.js`). | — | `application/javascript` |
 | **GET** | `/api/session` | Retrieves the current session snapshot. | — | `Snapshot` (see below) |
 | **POST** | `/api/session/start` | Starts a new session. | `{"dungeon": "Serbule Crypt"}` | `Snapshot` |
 | **POST** | `/api/session/stop` | Stops the active session and writes a report. | — | `Snapshot` |
 | **GET** | `/api/loot` | Retrieves only the list of looted items. | — | `[]LootEntry` |
-| **GET** | `/api/config` | Retrieves the current configuration (read-only). | — | `Config` |
+| **GET** | `/api/config` | Retrieves the current configuration. **POST** (or PUT) merges partial updates over the existing config (unset fields keep their values, including overlay settings) and persists to `config.json`. | — / partial `Config` | `Config` |
 | **GET** | `/api/npcs` | Retrieves a list of all indexed NPCs. | — | `[]NPCInfo` |
 | **GET** | `/api/sessions` | Retrieves a summary list of all past sessions. | — | `[]SessionSummary` |
 | **GET** | `/api/session/{id}` | Retrieves details of a specific past session. | — | `Snapshot` |
@@ -336,10 +350,22 @@ Example for custom chat log formats:
   "loot_regex": "",
   "cdn_root": "http://cdn.projectgorgon.com",
   "version_file": "http://client.projectgorgon.com/fileversion.txt",
-  "fallback_version": "v480",
+  "fallback_version": "v481",
   "cache_dir": "C:\\Users\\Michał\\.gorgon-session\\cache",
   "report_dir": "C:\\Users\\Michał\\.gorgon-session\\reports",
-  "sell_value_threshold": 500.0
+  "sell_value_threshold": 50.0,
+  "player_prices": {},
+  "notification_threshold": 500.0,
+  "backup_enabled": true,
+  "player_log_path": "C:\\Users\\Michał\\AppData\\LocalLow\\Elder Game\\Project Gorgon\\Player.log",
+  "overlay": {
+    "opacity": 98,
+    "click_through_opacity": 78,
+    "click_through_by_default": false,
+    "position": "bottom-right",
+    "theme": "dark",
+    "accent_color": "#5b93ff"
+  }
 }
 ```
 
@@ -348,7 +374,7 @@ Example for custom chat log formats:
 ## 6. Development & Extension
 
 ### 6.1. Building from Source
-To compile the application locally, ensure you have Go 1.21+ installed, then run:
+To compile the application locally, ensure you have Go 1.22+ installed, then run:
 ```powershell
 # Build the executable
 go build -o bin/gorgon.exe ./cmd/gorgon
@@ -362,30 +388,20 @@ The application includes several diagnostic flags to verify the integrity of the
 .\bin\gorgon.exe -dump-npcs > npcs-with-favor.json
 
 # Force a specific CDN version (useful for testing updates or historical data)
-.\bin\gorgon.exe -version v480
+.\bin\gorgon.exe -version v481
 
 # Bind to a different port
 .\bin\gorgon.exe -addr :8080
 ```
 
-### 6.3. Phase 2 Roadmap
-The architecture is designed to be easily extensible. Here is how to implement the planned Phase 2 features:
+### 6.3. Extension Status
 
-1. **Crafting Planner Integration**:
-   - **Data Ingestion**: Extend `internal/cdn/client.go` to fetch and cache `recipes.json` and `xptables.json` from the CDN.
-   - **Backend Models**: Parse recipes into structured Go models mapping recipes to required ingredients and skill levels.
-   - **Frontend UI**: Connect the existing `Crafting` view in `web/app.js` to a new `/api/recipes` endpoint, allowing users to search recipes, view material checklists, and track completion.
+Several originally planned Phase 2 features are already shipped:
 
-2. **Combat Logger Expansion**:
-   - **Grammar Extension**: Extend `internal/loot/parser.go` to parse combat events (e.g., damage dealt, damage taken, heals, critical hits, and experience gains).
-   - **Session Aggregation**: Update `internal/session/session.go` to track combat metrics (DPS, HPS, total damage, and XP earned) alongside loot entries.
-   - **Real-Time Feed**: Stream combat events over the `/api/feed` SSE stream and render live charts/graphs on the dashboard.
+1. **Crafting Planner** ✅ shipped — `internal/cdn/client.go` fetches and caches `recipes.json` (plus `areas.json`, `skills.json`, `abilities.json`); the **Recipes** view searches recipes with material checklists, backed by `/api/recipes`, `/api/recipes/search`, and `/api/crafting/profit`.
+2. **Combat Logger Expansion** ✅ shipped — `internal/playerlog/parser.go` parses combat lines (`use_ability`, `on_attack_hit_me` incl. name-only and evaded forms, `corpse_search`); `/api/combat` and `/api/combat/breakdown` feed the **Combat** view (uses, hits, estimated DPS).
+3. **Live Configuration Editing** ✅ shipped — `POST /api/config` (see §4.1) merges partial overrides, persists them to `config.json`, and hot-reloads the tailers/parser.
 
-3. **Inventory & Storage Management**:
-   - **Character Export Ingestion**: Implement a parser for the in-game character-export JSON (which contains current inventory, vault storage, and pocket dimensions).
-   - **Storage Mapping**: Map item locations across all storage vaults using the schema documented in the extraction maps.
-   - **Dashboard Search**: Add a global search bar to the dashboard to instantly locate items across all character vaults and storage chests.
+Still not implemented:
 
-4. **Live Configuration Editing**:
-   - **REST Endpoint**: Add a `POST /api/config` endpoint to `internal/server/server.go` that accepts a JSON payload of configuration overrides.
-   - **On-Disk Persistence**: Implement a thread-safe save mechanism in `internal/config/config.go` to write overrides back to `config.json` and hot-reload the log tailer or loot parser.
+4. **Inventory & Storage Management** — a parser for the in-game character-export JSON (inventory, vault storage, pocket dimensions), storage mapping, and a global item search across vaults.

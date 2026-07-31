@@ -100,10 +100,14 @@ func (c *Client) download(v Version, source string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// Area represents one zone/area from areas.json.
+// Area represents one zone/area from areas.json. X/Y are optional zone
+// coordinates used for route-planner distance sorting; nil when the CDN
+// does not publish them for this area.
 type Area struct {
-	FriendlyName      string `json:"FriendlyName"`
-	ShortFriendlyName string `json:"ShortFriendlyName,omitempty"`
+	FriendlyName      string   `json:"FriendlyName"`
+	ShortFriendlyName string   `json:"ShortFriendlyName,omitempty"`
+	X                 *float64 `json:"X,omitempty"`
+	Y                 *float64 `json:"Y,omitempty"`
 }
 
 // AreasFile is the JSON root of areas.json (map of internal key -> Area).

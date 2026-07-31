@@ -35,6 +35,31 @@ func TestParseZoneMultiWord(t *testing.T) {
 	}
 }
 
+func TestParseZoneFriendlyName(t *testing.T) {
+	p := newTestParser()
+	ev := p.ParseLine(`Downloading Map [9e4c] GUID 9e4c for area Serbule Hills runtime key 9e4c[Map_AreaSerbule2]`)
+	if ev == nil || ev.Kind != KindZone {
+		t.Fatalf("expected zone event, got %v", ev)
+	}
+	if ev.Zone != "Serbule Hills" {
+		t.Fatalf("expected 'Serbule Hills', got %q", ev.Zone)
+	}
+}
+
+func TestParseNoZoneFromCInit2(t *testing.T) {
+	p := newTestParser()
+	if ev := p.ParseLine(`[09:33:58] Sent C_INIT2 for AreaSerbule2`); ev != nil {
+		t.Fatalf("expected nil for C_INIT2 line, got %v", ev)
+	}
+}
+
+func TestParseNoZoneFromLoadingLevel(t *testing.T) {
+	p := newTestParser()
+	if ev := p.ParseLine(`[09:30:19] LOADING LEVEL ChooseCharacter`); ev != nil {
+		t.Fatalf("expected nil for LOADING LEVEL line, got %v", ev)
+	}
+}
+
 func TestParseSkill(t *testing.T) {
 	p := newTestParser()
 	ev := p.ParseLine(`[12:34:56] [Status] [WW] Skill 'Sword' gained 0.00`)

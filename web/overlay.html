@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gorgon overlay</title>
+<link rel="stylesheet" href="overlay.css">
+</head>
+<body>
+<div class="ov-panel">
+  <header class="ov-header" id="ov-title">
+    <span class="ov-title">gorgon overlay</span>
+    <div class="ov-controls">
+      <button id="ov-clickthrough" class="ov-btn" title="Toggle click-through">⌖</button>
+      <button id="ov-close" class="ov-btn ov-close" title="Close">×</button>
+    </div>
+  </header>
+  <div class="ov-body">
+    <div class="ov-state-row">
+      <span id="ov-state" class="ov-badge idle">idle</span>
+      <span id="ov-elapsed" class="ov-num">—</span>
+    </div>
+    <div class="ov-grid">
+      <div class="ov-stat">
+        <div class="ov-label">dps</div>
+        <div class="ov-num" id="ov-dps">—</div>
+      </div>
+      <div class="ov-stat">
+        <div class="ov-label">loot value</div>
+        <div class="ov-num" id="ov-loot">—</div>
+      </div>
+    </div>
+    <div class="ov-section">
+      <div class="ov-label">traders</div>
+      <div class="ov-traders">
+        <span id="ov-traders-count">—</span> traders &middot; <span id="ov-capacity" class="ov-num">—</span>g capacity left
+      </div>
+      <div class="ov-schedule" id="ov-schedule">—</div>
+    </div>
+    <div class="ov-foot">polls every 5s</div>
+  </div>
+</div>
+<script src="overlay.js"></script>
+</body>
+</html>

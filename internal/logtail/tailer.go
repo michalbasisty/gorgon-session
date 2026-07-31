@@ -13,6 +13,7 @@ package logtail
 import (
 	"context"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -54,6 +55,7 @@ func New(dir string) *Tailer {
 // does not need to exist yet; if it is missing or empty, the poller just
 // waits and starts emitting lines once the game creates the first *.log.
 func (t *Tailer) Start(ctx context.Context) error {
+	log.Printf("tailer: starting, watching directory: %q", t.Dir)
 	go t.loop(ctx)
 	return nil
 }
@@ -92,6 +94,7 @@ func (t *Tailer) SetDir(dir string) {
 func (t *Tailer) pollOnce(ctx context.Context) {
 	t.mu.Lock()
 	dir := t.Dir
+	curFile, curOffset := t.curFile, t.curOffset
 	t.mu.Unlock()
 
 	if dir == "" || dir == "." {
@@ -100,6 +103,7 @@ func (t *Tailer) pollOnce(ctx context.Context) {
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		log.Printf("tailer: ReadDir %q failed: %v", dir, err)
 		return
 	}
 	var newest string
@@ -122,42 +126,57 @@ func (t *Tailer) pollOnce(ctx context.Context) {
 		}
 	}
 	if newest == "" {
+		log.Printf("tailer: no .log files found in %q", dir)
 		return
+	}
+	if newest != curFile {
+		log.Printf("tailer: switching to newest log: %q (was %q)", newest, curFile)
 	}
 	info, err := os.Stat(newest)
 	if err != nil {
+		log.Printf("tailer: Stat %q failed: %v", newest, err)
 		return
 	}
 	sz := info.Size()
-	if newest != t.curFile {
+	if newest != curFile {
 		// New day / new file: start at END to only capture new lines.
-		t.curFile = newest
-		t.curOffset = sz
+		curFile = newest
+		curOffset = sz
 	}
-	if sz < t.curOffset {
+	if sz < curOffset {
 		// truncated (game restart); skip to end.
-		t.curOffset = sz
+		curOffset = sz
 	}
-	if sz <= t.curOffset {
+	if sz <= curOffset {
+		// Nothing new to read, but persist the current file/offset first:
+		// otherwise a fresh file would re-"switch" (and re-reset to EOF)
+		// on every poll and never read any lines.
+		t.mu.Lock()
+		t.curFile = curFile
+		t.curOffset = curOffset
+		t.mu.Unlock()
 		return
 	}
 	f, err := os.Open(newest)
 	if err != nil {
+		log.Printf("tailer: Open %q failed: %v", newest, err)
 		return
 	}
 	defer f.Close()
-	if _, err := f.Seek(t.curOffset, io.SeekStart); err != nil {
+	if _, err := f.Seek(curOffset, io.SeekStart); err != nil {
+		log.Printf("tailer: Seek %q to %d failed: %v", newest, curOffset, err)
 		return
 	}
-	buf := make([]byte, sz-t.curOffset)
+	buf := make([]byte, sz-curOffset)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		log.Printf("tailer: ReadFull %q failed: %v", newest, err)
 		return
 	}
 	// Emit complete lines; any trailing partial is kept for next poll by
 	// rewinding offset back to the last newline.
 	text := buf[:n]
-	t.curOffset += int64(n)
+	curOffset += int64(n)
 	lastNL := -1
 	for i, c := range text {
 		if c == '\n' {
@@ -167,14 +186,23 @@ func (t *Tailer) pollOnce(ctx context.Context) {
 	if lastNL >= 0 && lastNL < len(text)-1 {
 		// trailing partial line: rewind offset to start of partial so we
 		// re-read the remainder next tick when more bytes arrive.
-		t.curOffset -= int64(len(text) - 1 - lastNL)
+		curOffset -= int64(len(text) - 1 - lastNL)
 		text = text[:lastNL+1]
 	} else if lastNL < 0 && len(text) > 0 {
-		// Whole read had no newline at all; rewind all of it for next poll.
-		t.curOffset -= int64(len(text))
+		// Whole read had no newline at all; keep offset to re-read next poll.
 		return
 	}
-	for _, line := range splitLines(text) {
+
+	t.mu.Lock()
+	t.curFile = curFile
+	t.curOffset = curOffset
+	t.mu.Unlock()
+
+	lines := splitLines(text)
+	if len(lines) > 0 {
+		log.Printf("tailer: read %d lines from %q", len(lines), newest)
+	}
+	for _, line := range lines {
 		if !t.send(ctx, line) {
 			return
 		}

@@ -294,6 +294,112 @@ $('#delete-session')?.addEventListener('click', () => {
   if (state.historyDetailId) deleteSession(state.historyDetailId);
 });
 
+// Download every loot note across sessions as notes.txt.
+window.exportNotes = async function() {
+  try {
+    const resp = await fetch('/api/notes/export');
+    if (!resp.ok) { toast('Export failed', 'error'); return; }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'notes.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Notes exported', 'success');
+  } catch (e) {
+    toast('Export failed', 'error');
+  }
+};
+
+// Session comparison modal (A vs B with delta column).
+window.showCompareModal = async function() {
+  const sessions = await api('/api/sessions');
+  if (!Array.isArray(sessions) || sessions.length < 2) {
+    toast('Need at least 2 sessions to compare', 'error');
+    return;
+  }
+  const opts = sessions.map(s =>
+    `<option value="${escapeHtml(s.id)}">${escapeHtml(s.dungeon || 'unnamed')} · ${new Date(s.started_at).toLocaleDateString()}</option>`
+  ).join('');
+
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.innerHTML = `
+    <div class="modal-content" style="max-width:640px">
+      <div class="modal-header">
+        <h3>Compare Sessions</h3>
+        <button class="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px">
+          <div class="form-group" style="flex:1;min-width:160px;margin:0">
+            <label>A</label>
+            <select id="compare-select-a" class="settings-select" style="width:100%">${opts}</select>
+          </div>
+          <div class="form-group" style="flex:1;min-width:160px;margin:0">
+            <label>B</label>
+            <select id="compare-select-b" class="settings-select" style="width:100%">${opts}</select>
+          </div>
+          <button id="compare-run" class="add-btn">Compare</button>
+        </div>
+        <div id="compare-results"></div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.querySelector('.modal-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+  const selectB = modal.querySelector('#compare-select-b');
+  if (sessions.length > 1) selectB.selectedIndex = 1;
+
+  modal.querySelector('#compare-run').onclick = async () => {
+    const a = modal.querySelector('#compare-select-a').value;
+    const b = modal.querySelector('#compare-select-b').value;
+    if (!a || !b || a === b) { toast('Pick two different sessions', 'error'); return; }
+    const results = modal.querySelector('#compare-results');
+    results.innerHTML = '<div class="summary-empty" style="padding:12px">Comparing...</div>';
+    const data = await api(`/api/sessions/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+    if (!data) { results.innerHTML = ''; return; }
+    if (!data.a || !data.b) { results.innerHTML = '<div class="summary-empty">Compare failed — missing session data</div>'; return; }
+    const diff = data.diff || {};
+    const A = data.a, B = data.b;
+    const g = v => Math.round(v || 0).toLocaleString() + 'g';
+    const n = v => Math.round(v || 0).toLocaleString();
+    const delta = (v, fmt) => {
+      if (v > 0) return `<span class="diff-pos">+${fmt(v)}</span>`;
+      if (v < 0) return `<span class="diff-neg">−${fmt(Math.abs(v))}</span>`;
+      return '<span class="diff-zero">0</span>';
+    };
+    const rows = [
+      ['Duration', fmtElapsed((A.duration_seconds || 0) * 1000), fmtElapsed((B.duration_seconds || 0) * 1000),
+        delta((A.duration_seconds || 0) - (B.duration_seconds || 0), ms => fmtElapsed(ms))],
+      ['Loot value', g(A.total_loot_value), g(B.total_loot_value), delta((A.total_loot_value || 0) - (B.total_loot_value || 0), g)],
+      ['Kills', n(A.kills), n(B.kills), delta((A.kills || 0) - (B.kills || 0), n)],
+      ['Total damage', n(A.total_damage), n(B.total_damage), delta((A.total_damage || 0) - (B.total_damage || 0), n)],
+      ['XP', n(A.xp), n(B.xp), delta((A.xp || 0) - (B.xp || 0), n)],
+    ];
+    const title = s => {
+      const d = new Date(s.started_at);
+      return `${escapeHtml(s.dungeon || 'unnamed')} · ${d.toLocaleDateString()}`;
+    };
+    results.innerHTML = `
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">
+        <span style="color:var(--accent)">A:</span> ${title(A)} &nbsp;·&nbsp; <span style="color:var(--accent)">B:</span> ${title(B)}
+      </div>
+      <table class="schedule-table"><thead><tr>
+        <th></th><th style="text-align:right">A</th><th style="text-align:right">B</th><th style="text-align:right">Δ (A−B)</th>
+      </tr></thead><tbody>
+        ${rows.map(r => `<tr>
+          <td>${r[0]}</td>
+          <td style="text-align:right">${r[1]}</td>
+          <td style="text-align:right">${r[2]}</td>
+          <td style="text-align:right">${r[3]}</td>
+        </tr>`).join('')}
+      </tbody></table>`;
+  };
+};
+
 // History search input
 $('#history-search')?.addEventListener('input', () => {
   if (state.currentView === 'history') renderHistory();

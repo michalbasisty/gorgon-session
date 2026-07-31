@@ -213,6 +213,7 @@ async function renderTradersView() {
     header.innerHTML = `
       <span>${escapeHtml(areaData?.area || 'Unknown')} ${isCurrentArea ? '<span class="badge" style="margin-right:6px;background:var(--accent);color:#fff">current</span>' : ''}<span class="badge">${filtered.length}</span></span>
       <div class="area-header-actions">
+        <button class="bulk-btn" onclick="bulkSetArea('${areaName}')" title="Set reset for all traders in this area">📦 bulk</button>
         <button class="hide-btn" title="Hide region" onclick="toggleHideArea('${areaName}')">👁</button>
         <span class="collapse-icon">▼</span>
       </div>
@@ -252,7 +253,8 @@ async function renderTradersView() {
             <input type="checkbox" ${isShop ? 'checked' : ''} onchange="toggleShopNPC('${name}')">
             <span class="slider"></span>
           </label>
-          <div class="trader-name">${escapeHtml(npc.npc_name)}</div>
+          <div class="trader-name"><a class="trader-history-link" onclick="showTraderHistory('${name}')">${escapeHtml(npc.npc_name)}</a></div>
+          <div class="trader-types">${(npc.item_types||[]).map(t => `<span class="type-badge">${escapeHtml(t)}</span>`).join('')}</div>
           <div class="trader-capacity">
             <span class="capacity-label">Remaining:</span>
             <span class="capacity-value${remaining <= 0 ? ' zeroed' : ''}">${remaining.toLocaleString()}g</span>
@@ -596,3 +598,208 @@ function selectNPC(npcName, area, modal) {
     if (e.key === 'Enter') limitModal.querySelector('.add-trader-confirm').click();
   };
 }
+
+// Show refresh history modal
+window.showRefreshHistory = async function() {
+  const events = await api('/api/traders/history');
+  if (!Array.isArray(events)) return;
+
+  const hasIds = events.some(e => e.id);
+  const esc = s => escapeHtml(s).replace(/'/g, "\\'");
+
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.innerHTML = `
+    <div class="modal-content" style="max-width:640px">
+      <div class="modal-header">
+        <h3>🔄 Refresh History (${events.length} total)</h3>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button class="export-btn" onclick="exportTraderHistoryCSV()">Export CSV</button>
+          <button class="modal-close">×</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        ${events.length === 0
+          ? '<div style="padding:24px;text-align:center;color:var(--text-muted)">No refresh events yet</div>'
+          : `<table style="width:100%;border-collapse:collapse;font-size:13px">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border)">
+                  <th style="padding:6px 8px;text-align:left">NPC</th>
+                  <th style="padding:6px 8px;text-align:left">Area</th>
+                  <th style="padding:6px 8px;text-align:right">Sold</th>
+                  <th style="padding:6px 8px;text-align:right">Limit</th>
+                  <th style="padding:6px 8px;text-align:right">Reset At</th>
+                  ${hasIds ? '<th style="padding:6px 8px"></th>' : ''}
+                </tr>
+              </thead>
+              <tbody>
+                ${events.map(e => `
+                  <tr style="border-bottom:1px solid var(--border-muted)">
+                    <td style="padding:4px 8px">${escapeHtml(e.npc_name || '')}</td>
+                    <td style="padding:4px 8px;color:var(--text-muted)">${escapeHtml(e.area || '')}</td>
+                    <td style="padding:4px 8px;text-align:right">${(e.sold_at_reset || 0).toLocaleString()}g</td>
+                    <td style="padding:4px 8px;text-align:right">${(e.weekly_limit || 0).toLocaleString()}g</td>
+                    <td style="padding:4px 8px;text-align:right;white-space:nowrap;color:var(--text-muted)">${new Date(e.reset_at).toLocaleString()}</td>
+                    ${hasIds && e.id ? `<td style="padding:4px 8px;text-align:right"><button class="loot-del-btn" title="Delete event" onclick="deleteRefreshEvent('${esc(e.id)}', this)">×</button></td>` : ''}
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>`}
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.querySelector('.modal-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+};
+
+// Download all trader refresh history as CSV.
+window.exportTraderHistoryCSV = async function() {
+  try {
+    const resp = await fetch('/api/traders/history/export');
+    if (!resp.ok) { toast('Export failed', 'error'); return; }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'traders-history.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Trader history exported', 'success');
+  } catch (e) {
+    toast('Export failed', 'error');
+  }
+};
+
+// Delete one refresh event, then re-open the modal to reflect the change.
+window.deleteRefreshEvent = async function(id, btn) {
+  if (!id) return;
+  if (!confirm('Delete this refresh event?')) return;
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  const res = await api('/api/traders/history/delete', 'POST', { id });
+  if (res && res.ok) {
+    toast('Refresh event deleted', 'success');
+    showRefreshHistory();
+  } else if (btn) {
+    btn.disabled = false;
+    btn.textContent = '×';
+  }
+};
+
+// Per-trader refresh history modal
+window.showTraderHistory = async function(npcName) {
+  const events = await api('/api/traders/history?npc=' + encodeURIComponent(npcName));
+  if (!Array.isArray(events)) return;
+
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.innerHTML = `
+    <div class="modal-content" style="max-width:640px">
+      <div class="modal-header">
+        <h3>🔄 ${escapeHtml(npcName)} — Refresh History (${events.length} total)</h3>
+        <button class="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        ${events.length === 0
+          ? '<div style="padding:24px;text-align:center;color:var(--text-muted)">No refresh events yet</div>'
+          : `<table style="width:100%;border-collapse:collapse;font-size:13px">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border)">
+                  <th style="padding:6px 8px;text-align:left">NPC</th>
+                  <th style="padding:6px 8px;text-align:left">Area</th>
+                  <th style="padding:6px 8px;text-align:right">Sold</th>
+                  <th style="padding:6px 8px;text-align:right">Limit</th>
+                  <th style="padding:6px 8px;text-align:right">Reset At</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${events.map(e => `
+                  <tr style="border-bottom:1px solid var(--border-muted)">
+                    <td style="padding:4px 8px">${escapeHtml(e.npc_name || '')}</td>
+                    <td style="padding:4px 8px;color:var(--text-muted)">${escapeHtml(e.area || '')}</td>
+                    <td style="padding:4px 8px;text-align:right">${(e.sold_at_reset || 0).toLocaleString()}g</td>
+                    <td style="padding:4px 8px;text-align:right">${(e.weekly_limit || 0).toLocaleString()}g</td>
+                    <td style="padding:4px 8px;text-align:right;white-space:nowrap;color:var(--text-muted)">${new Date(e.reset_at).toLocaleString()}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>`}
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.querySelector('.modal-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+};
+
+// Schedule view
+window.showScheduleView = async function() {
+  const container = $('#traders-list');
+  if (!container) return;
+  container.innerHTML = '<div class="summary-empty">Loading schedule...</div>';
+
+  const data = await api('/api/traders/schedule');
+  if (!Array.isArray(data)) {
+    container.innerHTML = '<div class="summary-empty">Failed to load schedule</div>';
+    return;
+  }
+
+  let html = '<div style="margin-bottom:8px"><button class="back-btn" onclick="renderTradersView()">↩ back</button></div>';
+  html += '<table class="schedule-table"><thead><tr><th>NPC</th><th>Area</th><th>Remaining</th><th>Limit</th><th>Sold</th></tr></thead><tbody>';
+
+  for (const row of data) {
+    const rem = row.time_until || '';
+    const isNow = !rem || rem === 'now' || rem === '0';
+    const rowClass = isNow ? 'schedule-now' : '';
+    html += `<tr class="${rowClass}">
+      <td>${escapeHtml(row.npc_name || '')}</td>
+      <td>${escapeHtml(row.area || '')}</td>
+      <td>${isNow ? '<strong>now</strong>' : escapeHtml(rem)}</td>
+      <td>${(row.weekly_limit || 0).toLocaleString()}g</td>
+      <td>${(row.sold_this_week || 0).toLocaleString()}g</td>
+    </tr>`;
+  }
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+};
+
+// Bulk area operations
+window.bulkSetArea = async function(area) {
+  const days = prompt(`Set reset days for all traders in "${area}":`, '5');
+  if (days === null) return;
+  const daysVal = parseInt(days);
+  if (isNaN(daysVal) || daysVal < 0) { toast('Invalid days', 'error'); return; }
+
+  const hours = prompt(`Set reset hours for all traders in "${area}":`, '22');
+  if (hours === null) return;
+  const hoursVal = parseInt(hours);
+  if (isNaN(hoursVal) || hoursVal < 0 || hoursVal > 23) { toast('Invalid hours (0-23)', 'error'); return; }
+
+  await api('/api/traders', 'POST', {
+    action: 'bulk_area',
+    area: area,
+    reset_days: daysVal,
+    reset_hours: hoursVal
+  });
+  renderTradersView();
+};
+
+// Refresh notification polling
+let lastKnownHistoryCount = 0;
+
+async function checkRefreshNotifications() {
+  const events = await api('/api/traders/history');
+  if (!Array.isArray(events)) return;
+  if (lastKnownHistoryCount > 0 && events.length > lastKnownHistoryCount) {
+    const diff = events.length - lastKnownHistoryCount;
+    toast(`${diff} trader${diff > 1 ? 's' : ''} refreshed!`, 'info');
+  }
+  lastKnownHistoryCount = events.length;
+}
+
+// Initial fetch + poll every 30s
+if (lastKnownHistoryCount === 0) {
+  checkRefreshNotifications();
+}
+setInterval(checkRefreshNotifications, 30000);
