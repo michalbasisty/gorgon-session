@@ -7,8 +7,9 @@
 // runtime built into Windows 10/11 — a system component, not a third-party
 // app) that renders the app's own web UI in overlay mode
 // (http://127.0.0.1:7777/?overlay=1). It is always-on-top, excluded from the
-// taskbar, never steals focus, and can be toggled into click-through mode so
-// mouse input passes through to the game underneath.
+// taskbar, doesn't steal focus on open, and can be toggled into click-through
+// mode so mouse input passes through to the game underneath. Clicking an
+// input field activates the window normally so typing works.
 //
 // Controls:
 //   - Ctrl+F9 toggles click-through (the window visibly dims between the
@@ -398,10 +399,14 @@ func Run(serverURL string) error {
 			swpNoZOrder|swpNoActivate|swpNoMove)
 	}
 
-	// Always-on-top, no taskbar entry, never steals focus, layered (alpha).
+	// Always-on-top, no taskbar entry, layered (alpha). Deliberately NOT
+	// WS_EX_NOACTIVATE: that would block keyboard focus, so inputs in the
+	// overlay (search boxes, settings) could never be typed into. Opening
+	// still doesn't steal focus (all SetWindowPos calls use SWP_NOACTIVATE);
+	// clicking an input simply activates the window like any other app.
 	cur, _, _ := procGetWindowLongPtrW.Call(hwnd, uintptr(gwlExStyle))
 	procSetWindowLongPtrW.Call(hwnd, uintptr(gwlExStyle),
-		cur|wsExTopmost|wsExToolWindow|wsExNoActivate|wsExLayered)
+		cur|wsExTopmost|wsExToolWindow|wsExLayered)
 	procSetLayeredWindowAttrs.Call(hwnd, 0, o.alphaNormal, lwaAlpha)
 
 	// Dock to the chosen corner of the primary work area, 12px margin — the
