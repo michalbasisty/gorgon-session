@@ -40,6 +40,23 @@ The overlay can be opened from the dashboard (Settings → Open Overlay) or dire
 
 ---
 
+## Using the overlay with Steam
+
+The overlay requires the game to run in **borderless windowed** mode so it can sit on top without minimizing the game. Steam's `-popupwindow` flag does exactly that.
+
+1. Open Steam → right-click **Project Gorgon** → **Properties**.
+2. Under **Launch Options**, add:
+   ```
+   -popupwindow
+   ```
+3. Launch the game — it runs borderless windowed.
+4. In-game, make sure **Fullscreen** is **disabled** in the graphics settings. If it's enabled, `-popupwindow` won't take effect and the overlay won't work.
+5. Run `.\gorgon-session.exe -overlay`. The overlay window appears on top of the game.
+
+If you use a launcher other than Steam, add `-popupwindow` to whatever shortcut you use to start the game.
+
+---
+
 ## Honest caveats
 
 - Session data lives in memory and is only written to report JSON when a session is **stopped** — a crash loses the current session.
