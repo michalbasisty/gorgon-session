@@ -1232,7 +1232,7 @@ func TestHandleRoutePlanner_DistanceUnavailable(t *testing.T) {
 		"npc_t": {
 			InternalName: "npc_t",
 			Name:         "Test Trader",
-			AreaFriendly: "Serbule",
+			AreaFriendly: "Somewhere Unknown", // no CDN coords, no fallback entry
 			Services:     []cdn.Service{{Type: "Store", ItemTypes: []string{"Wooden"}}},
 		},
 	}
@@ -1241,16 +1241,15 @@ func TestHandleRoutePlanner_DistanceUnavailable(t *testing.T) {
 	mgr.SetZone("Eltibule")
 	mgr.AddLoot(session.LootEntry{Name: "Maple Wood", Valor: 100, Count: 1})
 
-	// Areas exist but carry no coordinates.
+	// Areas exist but carry no coordinates; trader zone not in fallback table.
 	srv := &Server{
 		Favor: favor.FromNpcs(npcs),
 		Npcs:  npcs,
 		Sess:  mgr,
 		Areas: cdn.AreaIndex{
-			ByFriendly: map[string]string{"eltibule": "AreaEltibule", "serbule": "AreaSerbule"},
+			ByFriendly: map[string]string{"eltibule": "AreaEltibule"},
 			ByInternal: map[string]cdn.Area{
 				"AreaEltibule": {FriendlyName: "Eltibule"},
-				"AreaSerbule":  {FriendlyName: "Serbule"},
 			},
 		},
 	}
@@ -1277,7 +1276,7 @@ func TestHandleRoutePlanner_DistanceUnavailable(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w2.Code, w2.Body.String())
 	}
 	var traderResp struct {
-		DistanceKm *float64       `json:"distance_km"`
+		DistanceKm *float64        `json:"distance_km"`
 		SellItems  []sellRouteItem `json:"sell_items"`
 	}
 	if err := json.Unmarshal(w2.Body.Bytes(), &traderResp); err != nil {
@@ -1288,5 +1287,54 @@ func TestHandleRoutePlanner_DistanceUnavailable(t *testing.T) {
 	}
 	if len(traderResp.SellItems) != 1 || traderResp.SellItems[0].Name != "Maple Wood" {
 		t.Errorf("expected Maple Wood sell item, got %+v", traderResp.SellItems)
+	}
+}
+
+func TestHandleRoutePlanner_DistanceFallback(t *testing.T) {
+	// CDN publishes no coordinates; the built-in zone table + dungeon-name
+	// matching must still produce distances so nearest-first sorting works.
+	npcs := cdn.NpcsFile{
+		"npc_serbule": {
+			InternalName: "npc_serbule",
+			Name:         "Serbule Trader",
+			AreaFriendly: "Serbule", // fallback (200,300)
+			Services:     []cdn.Service{{Type: "Store", ItemTypes: []string{"Wooden"}}},
+		},
+		"npc_eltibule": {
+			InternalName: "npc_eltibule",
+			Name:         "Eltibule Trader",
+			AreaFriendly: "Eltibule", // fallback (200,450)
+			Services:     []cdn.Service{{Type: "Store", ItemTypes: []string{"Wooden"}}},
+		},
+	}
+	mgr := session.New()
+	_ = mgr.Start("Test Dungeon", "")
+	mgr.SetZone("Serbule Crypt") // dungeon name → parent zone Serbule (200,300)
+	mgr.AddLoot(session.LootEntry{Name: "Maple Wood", Valor: 100, Count: 1})
+
+	srv := &Server{
+		Favor: favor.FromNpcs(npcs),
+		Npcs:  npcs,
+		Sess:  mgr,
+		Areas: cdn.AreaIndex{}, // no CDN areas at all
+	}
+
+	req := httptest.NewRequest("GET", "/api/route-planner?item=Maple%20Wood&sort=distance", nil)
+	w := httptest.NewRecorder()
+	srv.handleRoutePlanner(w, req)
+	var resp struct {
+		Routes []RouteInfo `json:"routes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	if len(resp.Routes) != 2 {
+		t.Fatalf("expected 2 routes, got %+v", resp.Routes)
+	}
+	if resp.Routes[0].Trader != "Serbule Trader" || resp.Routes[0].DistanceKm == nil || *resp.Routes[0].DistanceKm != 0 {
+		t.Errorf("expected Serbule Trader at 0km first, got %+v", resp.Routes[0])
+	}
+	if resp.Routes[1].Trader != "Eltibule Trader" || resp.Routes[1].DistanceKm == nil || *resp.Routes[1].DistanceKm != 150 {
+		t.Errorf("expected Eltibule Trader at 150km, got %+v", resp.Routes[1])
 	}
 }

@@ -86,3 +86,9 @@ If you use a launcher other than Steam, add `-popupwindow` to whatever shortcut 
 
 - The app only reads logs and CDN data; it never modifies the game client.
 - All processing happens locally on your machine.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for building, testing, code layout, and contribution guidelines. Technical architecture details live in [DOCUMENTATION.md](DOCUMENTATION.md).

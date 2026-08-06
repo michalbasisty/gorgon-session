@@ -68,6 +68,7 @@ func (ft *FileTailer) loop(ctx context.Context) {
 func (ft *FileTailer) pollOnce(ctx context.Context) {
 	ft.mu.Lock()
 	path := ft.Path
+	offset := ft.offset
 	ft.mu.Unlock()
 	if path == "" {
 		return
@@ -77,16 +78,29 @@ func (ft *FileTailer) pollOnce(ctx context.Context) {
 		return
 	}
 	sz := info.Size()
-	if ft.offset == 0 {
+	if offset == 0 {
 		// First poll: start at end.
-		ft.offset = sz
+		offset = sz
 	}
-	if sz < ft.offset {
-		// truncated / rotated
-		ft.offset = 0
+	if sz < offset {
+		// truncated / rotated: restart from the end on the next poll
+		ft.mu.Lock()
+		if ft.Path == path {
+			ft.offset = 0
+		}
+		ft.mu.Unlock()
 		return
 	}
-	if sz <= ft.offset {
+	if sz <= offset {
+		// Persist the offset (including the start-at-end offset from the
+		// first poll) so the next poll reads from a non-zero position.
+		// Without this write-back, offset stays 0 and every poll restarts
+		// at the end, so the tailer would never emit anything.
+		ft.mu.Lock()
+		if ft.Path == path {
+			ft.offset = offset
+		}
+		ft.mu.Unlock()
 		return
 	}
 	f, err := os.Open(path)
@@ -94,16 +108,16 @@ func (ft *FileTailer) pollOnce(ctx context.Context) {
 		return
 	}
 	defer f.Close()
-	if _, err := f.Seek(ft.offset, io.SeekStart); err != nil {
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return
 	}
-	buf := make([]byte, sz-ft.offset)
+	buf := make([]byte, sz-offset)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 		return
 	}
 	text := buf[:n]
-	ft.offset += int64(n)
+	newOffset := offset + int64(n)
 	lastNL := -1
 	for i, c := range text {
 		if c == '\n' {
@@ -111,12 +125,25 @@ func (ft *FileTailer) pollOnce(ctx context.Context) {
 		}
 	}
 	if lastNL >= 0 && lastNL < len(text)-1 {
-		ft.offset -= int64(len(text) - 1 - lastNL)
+		newOffset -= int64(len(text) - 1 - lastNL)
 		text = text[:lastNL+1]
 	} else if lastNL < 0 && len(text) > 0 {
-		ft.offset -= int64(len(text))
+		newOffset -= int64(len(text))
+		ft.mu.Lock()
+		if ft.Path == path {
+			ft.offset = newOffset
+		}
+		ft.mu.Unlock()
 		return
 	}
+	// Write the new offset back only if the path is unchanged since we read it —
+	// a concurrent SetPath resets both, and clobbering that would seek the new
+	// file at a stale offset.
+	ft.mu.Lock()
+	if ft.Path == path {
+		ft.offset = newOffset
+	}
+	ft.mu.Unlock()
 	for _, line := range splitLines(text) {
 		if !ft.send(ctx, line) {
 			return

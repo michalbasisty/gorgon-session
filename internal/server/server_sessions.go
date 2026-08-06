@@ -490,18 +490,16 @@ func (s *Server) handleNotesExport(w http.ResponseWriter, r *http.Request) {
 
 // CompareSummary is one side of a session comparison.
 type CompareSummary struct {
-	ID              string         `json:"id"`
-	StartedAt       time.Time      `json:"started_at"`
-	DurationSeconds float64        `json:"duration_seconds"`
-	TotalLootValue  float64        `json:"total_loot_value"`
-	Kills           int            `json:"kills"`
-	TotalDamage     float64        `json:"total_damage"`
-	XP              int            `json:"xp"`
-	AbilityCasts    map[string]int `json:"ability_casts"`
+	ID              string    `json:"id"`
+	StartedAt       time.Time `json:"started_at"`
+	DurationSeconds float64   `json:"duration_seconds"`
+	TotalLootValue  float64   `json:"total_loot_value"`
+	Kills           int       `json:"kills"`
+	XP              int       `json:"xp"`
 }
 
 func (s *Server) summarizeSnapshot(id string, snap session.Snapshot) CompareSummary {
-	sum := CompareSummary{ID: id, StartedAt: snap.StartedAt, AbilityCasts: map[string]int{}}
+	sum := CompareSummary{ID: id, StartedAt: snap.StartedAt}
 	if !snap.StartedAt.IsZero() && !snap.EndedAt.IsZero() {
 		sum.DurationSeconds = snap.EndedAt.Sub(snap.StartedAt).Seconds()
 	}
@@ -512,47 +510,7 @@ func (s *Server) summarizeSnapshot(id string, snap session.Snapshot) CompareSumm
 	for _, xp := range snap.XPGains {
 		sum.XP += xp.Amount
 	}
-	for name, n := range snap.AbilityCounts {
-		if _, ok := s.abilityIDByNameKey[strings.ToLower(strings.TrimSpace(name))]; ok {
-			continue // counted via AbilityIDCounts below
-		}
-		sum.AbilityCasts[name] += n
-	}
-	for id, n := range snap.AbilityIDCounts {
-		name := ""
-		if a, ok := s.abilityByID[id]; ok {
-			name = a.Name
-			if name == "" {
-				name = a.InternalName
-			}
-		}
-		if name == "" {
-			name = fmt.Sprintf("ability_%d", id)
-		}
-		sum.AbilityCasts[name] += n
-	}
-	sum.TotalDamage = s.estimatedTotalDamage(snap)
 	return sum
-}
-
-// estimatedTotalDamage sums CDN base damage x casts per ability (same estimate
-// handleCombat reports); no per-hit damage is stored in the session model.
-func (s *Server) estimatedTotalDamage(snap session.Snapshot) float64 {
-	total := 0.0
-	for id, uses := range snap.AbilityIDCounts {
-		if a, ok := s.abilityByID[id]; ok {
-			total += a.BaseDamage() * float64(uses)
-		}
-	}
-	for name, uses := range snap.AbilityCounts {
-		if _, ok := s.abilityIDByNameKey[strings.ToLower(strings.TrimSpace(name))]; ok {
-			continue
-		}
-		if a, ok := s.abilityByNameKey[strings.ToLower(strings.TrimSpace(name))]; ok {
-			total += a.BaseDamage() * float64(uses)
-		}
-	}
-	return total
 }
 
 // handleSessionsCompare: GET ?a=ID&b=ID compares two past sessions.
@@ -579,10 +537,9 @@ func (s *Server) handleSessionsCompare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"a": a, "b": b,
 		"diff": map[string]float64{
-			"loot_value":   a.TotalLootValue - b.TotalLootValue,
-			"kills":        float64(a.Kills - b.Kills),
-			"total_damage": a.TotalDamage - b.TotalDamage,
-			"xp":           float64(a.XP - b.XP),
+			"loot_value": a.TotalLootValue - b.TotalLootValue,
+			"kills":      float64(a.Kills - b.Kills),
+			"xp":         float64(a.XP - b.XP),
 		},
 	})
 }

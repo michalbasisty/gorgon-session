@@ -27,6 +27,7 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", contentType(p))
 	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(b)
 }
 
@@ -45,6 +46,10 @@ func contentType(name string) string {
 
 // handleFeed: GET Server-Sent Events stream of session events.
 func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	f, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)

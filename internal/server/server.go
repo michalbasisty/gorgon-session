@@ -4,7 +4,6 @@ package server
 import (
 	"io/fs"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -35,10 +34,6 @@ type Server struct {
 	Areas              cdn.AreaIndex       // zone hierarchy lookup
 	Skills             cdn.SkillsFile      // skill definitions
 	Recipes            cdn.RecipesFile     // crafting recipes
-	Abilities          cdn.AbilitiesFile   // combat abilities
-	abilityByID        map[int]cdn.Ability
-	abilityByNameKey   map[string]cdn.Ability
-	abilityIDByNameKey map[string]int
 
 	cfgMu          sync.RWMutex // guards Cfg (written by handleConfig/handleImport, read everywhere)
 	sessionsMu     sync.RWMutex
@@ -47,7 +42,7 @@ type Server struct {
 }
 
 // New wires a Server.
-func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs.FS, tailer *logtail.Tailer, plTailer *logtail.FileTailer, parser *loot.Parser, trader *trader.Manager, items cdn.ItemsFile, ver cdn.Version, npcs cdn.NpcsFile, areas cdn.AreaIndex, skills cdn.SkillsFile, recipes cdn.RecipesFile, abilities cdn.AbilitiesFile) *Server {
+func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs.FS, tailer *logtail.Tailer, plTailer *logtail.FileTailer, parser *loot.Parser, trader *trader.Manager, items cdn.ItemsFile, ver cdn.Version, npcs cdn.NpcsFile, areas cdn.AreaIndex, skills cdn.SkillsFile, recipes cdn.RecipesFile) *Server {
 	// Build item-by-ID map
 	itemByID := make(map[int]cdn.Item)
 	itemByName := make(map[string]cdn.Item, len(items))
@@ -62,56 +57,21 @@ func New(cfg config.Config, sess *session.Manager, favor *favor.Engine, webFS fs
 	pricesPath := filepath.Join(cfg.ReportDir, "price-history.json")
 	pricesStore := prices.New(pricesPath)
 
-	abilityByID := make(map[int]cdn.Ability, len(abilities))
-	abilityByNameKey := make(map[string]cdn.Ability, len(abilities)*2)
-	abilityIDByNameKey := make(map[string]int, len(abilities)*2)
-	for key, a := range abilities {
-		id := 0
-		if strings.HasPrefix(key, "ability_") {
-			if parsed, err := strconv.Atoi(strings.TrimPrefix(key, "ability_")); err == nil {
-				id = parsed
-				abilityByID[id] = a
-			}
-		} else if parsed, err := strconv.Atoi(strings.TrimSpace(key)); err == nil {
-			// Some ability dumps can be keyed by plain numeric strings.
-			id = parsed
-			abilityByID[id] = a
-		}
-		if a.Name != "" {
-			k := strings.ToLower(strings.TrimSpace(a.Name))
-			abilityByNameKey[k] = a
-			if id > 0 {
-				abilityIDByNameKey[k] = id
-			}
-		}
-		if a.InternalName != "" {
-			k := strings.ToLower(strings.TrimSpace(a.InternalName))
-			abilityByNameKey[k] = a
-			if id > 0 {
-				abilityIDByNameKey[k] = id
-			}
-		}
-	}
-
 	return &Server{
-		Cfg:                cfg,
-		Sess:               sess,
-		Favor:              favor,
-		WebFS:              webFS,
-		Tailer:             tailer,
-		PLTailer:           plTailer,
-		Parser:             parser,
-		Trader:             trader,
-		ItemByID:           itemByID,
-		itemByName:         itemByName,
-		Prices:             pricesStore,
-		Npcs:               npcs,
-		Areas:              areas,
-		Skills:             skills,
-		Recipes:            recipes,
-		Abilities:          abilities,
-		abilityByID:        abilityByID,
-		abilityByNameKey:   abilityByNameKey,
-		abilityIDByNameKey: abilityIDByNameKey,
+		Cfg:        cfg,
+		Sess:       sess,
+		Favor:      favor,
+		WebFS:      webFS,
+		Tailer:     tailer,
+		PLTailer:   plTailer,
+		Parser:     parser,
+		Trader:     trader,
+		ItemByID:   itemByID,
+		itemByName: itemByName,
+		Prices:     pricesStore,
+		Npcs:       npcs,
+		Areas:      areas,
+		Skills:     skills,
+		Recipes:    recipes,
 	}
 }

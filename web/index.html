@@ -33,7 +33,6 @@
     <div class="overlay-top-nav" role="tablist" aria-label="Overlay top menu">
       <button type="button" class="nav-item overlay-nav" data-view="tracker" role="tab" tabindex="-1" aria-selected="true">Tracker</button>
       <button type="button" class="nav-item overlay-nav" data-view="traders" role="tab" tabindex="-1" aria-selected="false">Traders</button>
-      <button type="button" class="nav-item overlay-nav" data-view="combat" role="tab" tabindex="-1" aria-selected="false">Combat</button>
       <button type="button" class="nav-item overlay-nav" data-view="drop-rates" role="tab" tabindex="-1" aria-selected="false">Drop Rates</button>
       <button type="button" class="nav-item overlay-nav" data-view="items" role="tab" tabindex="-1" aria-selected="false">Items</button>
       <button type="button" class="nav-item overlay-nav" data-view="summary" role="tab" tabindex="-1" aria-selected="false">Summary</button>
@@ -73,7 +72,6 @@
         <li class="nav-item" data-view="items" role="tab" tabindex="0" aria-selected="false">Item Catalog</li>
         <li class="nav-item" data-view="warcache" role="tab" tabindex="0" aria-selected="false">Warcache</li>
         <li class="nav-item" data-view="skills" role="tab" tabindex="0" aria-selected="false">Skills</li>
-        <li class="nav-item" data-view="combat" role="tab" tabindex="0" aria-selected="false">Combat</li>
         <li class="nav-item" data-view="recipes" role="tab" tabindex="0" aria-selected="false">Recipes</li>
         <li class="nav-item" data-view="drop-rates" role="tab" tabindex="0" aria-selected="false">Drop Rates</li>
         <li class="nav-item" data-view="settings" role="tab" tabindex="0" aria-selected="false">Settings</li>
@@ -174,7 +172,6 @@
           <div class="summary-controls">
             <button id="sort-npc" class="sort-btn active">by NPC</button>
             <button id="sort-map" class="sort-btn">by Map</button>
-            <button id="combat-btn" class="sort-btn" onclick="showCombatBreakdown()" title="Combat breakdown for the current session">Combat</button>
           </div>
         </div>
 
@@ -233,7 +230,6 @@
           <div class="history-detail-actions">
             <button id="export-csv" class="export-btn">Export CSV</button>
             <button id="export-notes" class="export-btn" style="background:var(--muted)" onclick="exportNotes()" title="Download all loot notes as notes.txt">Export Notes</button>
-            <button id="combat-breakdown-btn" class="export-btn" style="background:var(--muted)" onclick="showCombatBreakdownForDetail()" title="Combat breakdown for this session">Combat</button>
             <button id="delete-session" class="delete-btn">Delete</button>
           </div>
           <div class="history-detail-meta">
@@ -418,14 +414,6 @@
         <div id="skills-list" class="items-grid"></div>
       </section>
 
-      <!-- Combat Log view -->
-      <section id="view-combat" class="hidden">
-        <h2>Combat Log</h2>
-        <div class="items-count"><span id="combat-count">No combat data</span></div>
-        <div id="combat-stats" class="dash-widgets"></div>
-        <div id="combat-list"></div>
-      </section>
-
       <!-- Drop Rates view -->
       <section id="view-drop-rates" class="hidden">
         <h2>Drop Rates</h2>
@@ -445,6 +433,7 @@
       <section id="view-settings" class="hidden">
         <h2>Settings</h2>
         <form id="settings-form" class="settings-form">
+          <h3>App Settings</h3>
           <div class="form-group">
             <label for="settings-chat-log-dir">Chat Log Directory</label>
             <input id="settings-chat-log-dir" type="text" placeholder="e.g., C:\Users\...\AppData\LocalLow\Elder Game\Project Gorgon\ChatLogs" autocomplete="off">
@@ -504,7 +493,7 @@
           <h3>Data Management</h3>
           <div class="settings-actions-row">
             <button id="export-data" class="add-btn">Download Export</button>
-            <button id="import-data" class="add-btn" style="background:var(--muted)">Import Settings</button>
+            <button id="import-data" class="add-btn btn-secondary">Import Settings</button>
             <input type="file" id="import-file" accept=".json" style="display:none">
             <span id="import-status" class="settings-status"></span>
           </div>
@@ -567,18 +556,18 @@
 
           <div class="settings-actions-row">
             <button id="overlay-save" type="button" class="add-btn">Save Overlay Settings</button>
-            <button id="overlay-reset" type="button" class="add-btn" style="background:var(--muted)">Reset to Defaults</button>
+            <button id="overlay-reset" type="button" class="add-btn btn-secondary">Reset to Defaults</button>
           </div>
-          <small class="form-help">Changes apply the next time the overlay opens.</small>
+          <small class="form-help">Opacity changes apply immediately to a running overlay. Position, theme, and accent apply the next time the overlay opens.</small>
 
           <div class="settings-actions-row" style="margin-top:16px">
             <button id="open-overlay" class="add-btn" onclick="openOverlay()">Open Overlay</button>
-            <button id="copy-overlay-url" class="add-btn" style="background:var(--muted)">Copy URL</button>
+            <button id="copy-overlay-url" class="add-btn btn-secondary">Copy URL</button>
           </div>
           <small class="form-help">
-            <strong>Controls:</strong> drag to move · <kbd>Ctrl+F9</kbd> toggles see-through (click-through) · <kbd>Esc</kbd> closes.<br>
-            The overlay opens automatically as a native window; the URL below is only a browser fallback:<br>
-            URL: <code id="overlay-url">http://localhost:7777/?overlay=1</code>
+            Drag to move. <kbd>Ctrl+F9</kbd> toggles click-through. <kbd>Esc</kbd> closes.<br>
+            The overlay opens as a native window. The URL below is a browser fallback:<br>
+            <code id="overlay-url">http://localhost:7777/?overlay=1</code>
           </small>
         </div>
       </section>

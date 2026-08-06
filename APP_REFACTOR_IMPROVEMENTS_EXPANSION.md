@@ -22,7 +22,7 @@ Originally an audit list; most high-priority items are now done. `go test ./...`
 **Expansion features**
 - Sell route optimizer (`/api/route-planner`, route plan panel in Tracker).
 - Session comparison mode (`/api/sessions/compare`).
-- Combat efficiency panel (`/api/combat`, `/api/combat/breakdown`).
+- Kill tracking from `corpse_search` lines.
 - Feature-scope export/import (settings `/api/export` + `/api/import`, trader history CSV, notes export, sessions bulk export).
 - Cache status UI — the Warcache view shows CDN cache version age with refresh controls.
 

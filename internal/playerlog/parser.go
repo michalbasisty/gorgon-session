@@ -22,25 +22,20 @@ import (
 type Kind string
 
 const (
-	KindLogin         Kind = "login"
-	KindZone          Kind = "zone"
-	KindSkill         Kind = "skill"
-	KindUseAbility    Kind = "use_ability"
-	KindOnAttackHitMe Kind = "on_attack_hit_me"
-	KindCorpseSearch  Kind = "corpse_search"
+	KindLogin        Kind = "login"
+	KindZone         Kind = "zone"
+	KindSkill        Kind = "skill"
+	KindCorpseSearch Kind = "corpse_search"
 )
 
 // Event is one parsed line from Player.log.
 type Event struct {
-	Raw         string // original line
-	Kind        Kind
-	Zone        string // zone name
-	Skill       string // skill name
-	Value       int    // skill tick value (always 0 for [WW] but future-proof)
-	AbilityName string // ability name (from UseAbility / OnAttackHitMe)
-	AbilityID   int    // ability ID
-	Evaded      bool   // for OnAttackHitMe lines that include "Evaded = ..."
-	Mob         string // corpse/kill related mob name
+	Raw   string // original line
+	Kind  Kind
+	Zone  string // zone name
+	Skill string // skill name
+	Value int    // skill tick value (always 0 for [WW] but future-proof)
+	Mob   string // corpse/kill related mob name
 }
 
 var (
@@ -52,17 +47,6 @@ var (
 	zoneLegacyRe = regexp.MustCompile(`You have entered (.+?)\.$`)
 	// [HH:MM:SS] [Status] [WW] Skill 'Name' gained 0.00
 	skillRe = regexp.MustCompile(`\[Status\]\s+\[WW\]\s+Skill '(.+?)' gained (\d+\.?\d*)`)
-	// UseAbility(Ability(Name,ID))
-	useAbilityRe = regexp.MustCompile(`UseAbility\(Ability\(([^,]+),(\d+)\)\)`)
-	// entity_XXXXX: OnAttackHitMe(Ability(Name,ID)). Evaded = True|False
-	// Anchored at line start to avoid matching incoming lines like:
-	// "localPlayer - entity_123: OnAttackHitMe(...)"
-	onAttackHitMeAbilityEvadedRe = regexp.MustCompile(`^entity_\d+:\s+OnAttackHitMe\(Ability\(([^,]+),(\d+)\)\)\.\s*Evaded\s*=\s*(True|False)`)
-	// entity_XXXXX: OnAttackHitMe(Ability(Name,ID))
-	onAttackHitMeRe = regexp.MustCompile(`^entity_\d+:\s+OnAttackHitMe\(Ability\(([^,]+),(\d+)\)\)`)
-	// entity_XXXXX: OnAttackHitMe(Name). Evaded = False
-	// Also anchored for the same reason.
-	onAttackHitMeNamedRe = regexp.MustCompile(`^entity_\d+:\s+OnAttackHitMe\(([^\)]+)\)\.\s*Evaded\s*=\s*(True|False)`)
 	// LocalPlayer: ProcessTalkScreen(..., "Search Corpse of X", ...)
 	corpseSearchRe = regexp.MustCompile(`ProcessTalkScreen\([^\)]*"Search Corpse of (.+?)"`)
 )
@@ -111,39 +95,8 @@ func (p *Parser) ParseLine(line string) *Event {
 		return &Event{Raw: line, Kind: KindSkill, Skill: s, Value: v}
 	}
 
-	// UseAbility
-	if m := useAbilityRe.FindStringSubmatch(body); m != nil {
-		id, _ := strconv.Atoi(m[2])
-		return &Event{Raw: line, Kind: KindUseAbility, AbilityName: strings.TrimSpace(m[1]), AbilityID: id}
-	}
-
-	// OnAttackHitMe (with embedded Ability(Name,ID) + evaded flag)
-	if m := onAttackHitMeAbilityEvadedRe.FindStringSubmatch(body); m != nil {
-		id, _ := strconv.Atoi(m[2])
-		return &Event{
-			Raw:         line,
-			Kind:        KindOnAttackHitMe,
-			AbilityName: strings.TrimSpace(m[1]),
-			AbilityID:   id,
-			Evaded:      strings.EqualFold(strings.TrimSpace(m[3]), "True"),
-		}
-	}
-
-	// OnAttackHitMe (with embedded Ability(Name,ID))
-	if m := onAttackHitMeRe.FindStringSubmatch(body); m != nil {
-		id, _ := strconv.Atoi(m[2])
-		return &Event{Raw: line, Kind: KindOnAttackHitMe, AbilityName: strings.TrimSpace(m[1]), AbilityID: id}
-	}
-
-	// OnAttackHitMe (name-only form seen in newer logs)
-	if m := onAttackHitMeNamedRe.FindStringSubmatch(body); m != nil {
-		return &Event{
-			Raw:         line,
-			Kind:        KindOnAttackHitMe,
-			AbilityName: strings.TrimSpace(m[1]),
-			Evaded:      strings.EqualFold(strings.TrimSpace(m[2]), "True"),
-		}
-	}
+	// UseAbility / OnAttackHitMe combat lines are intentionally not parsed:
+	// combat log data requires a VIP subscription, so the feature is dropped.
 
 	// Corpse search line can act as a strong loot-source signal.
 	if m := corpseSearchRe.FindStringSubmatch(body); m != nil {

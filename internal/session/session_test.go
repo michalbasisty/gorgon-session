@@ -153,25 +153,6 @@ func TestSetZone(t *testing.T) {
 	}
 }
 
-func TestCombatTracking(t *testing.T) {
-	m := New()
-	m.Start("test", "")
-	m.AddAbilityUse("Arrow Volley")
-	m.AddAbilityUse("Arrow Volley")
-	m.AddAbilityUse("Flurry")
-	m.AddCombatHit("Arrow Volley")
-	snap := m.Snapshot()
-	if snap.AbilityCounts["Arrow Volley"] != 2 {
-		t.Fatalf("Arrow Volley use count: expected 2, got %d", snap.AbilityCounts["Arrow Volley"])
-	}
-	if snap.AbilityCounts["Flurry"] != 1 {
-		t.Fatalf("Flurry use count: expected 1, got %d", snap.AbilityCounts["Flurry"])
-	}
-	if snap.HitCounts["Arrow Volley"] != 1 {
-		t.Fatalf("Arrow Volley hit count: expected 1, got %d", snap.HitCounts["Arrow Volley"])
-	}
-}
-
 func TestGold(t *testing.T) {
 	m := New()
 	m.Start("test", "")
@@ -232,7 +213,6 @@ func TestStartResetsState(t *testing.T) {
 	m := New()
 	m.Start("first", "")
 	m.AddLoot(LootEntry{Name: "Old Item", Valor: 1, Count: 1, LastSeen: time.Now()})
-	m.AddAbilityUse("Fireball")
 	m.AddGold(999)
 	m.Stop("")
 	// Start new session
@@ -243,9 +223,6 @@ func TestStartResetsState(t *testing.T) {
 	}
 	if snap.TotalGold != 0 {
 		t.Fatal("new session should have 0 gold")
-	}
-	if len(snap.AbilityCounts) != 0 {
-		t.Fatal("new session should have empty ability counts")
 	}
 }
 

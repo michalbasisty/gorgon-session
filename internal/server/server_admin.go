@@ -382,19 +382,17 @@ func (s *Server) traderKeywords(npc cdn.Npc) []string {
 }
 
 // areaCoords looks up an area's optional X/Y coordinates by friendly name.
+// Prefers CDN coordinates; falls back to the built-in wiki-derived table when
+// the CDN publishes none (the current state of areas.json).
 func (s *Server) areaCoords(area string) (float64, float64, bool) {
-	if s.Areas.ByFriendly == nil {
-		return 0, 0, false
+	if s.Areas.ByFriendly != nil {
+		if key, ok := s.Areas.ByFriendly[strings.ToLower(strings.TrimSpace(area))]; ok {
+			if a, ok := s.Areas.ByInternal[key]; ok && a.X != nil && a.Y != nil {
+				return *a.X, *a.Y, true
+			}
+		}
 	}
-	key, ok := s.Areas.ByFriendly[strings.ToLower(strings.TrimSpace(area))]
-	if !ok {
-		return 0, 0, false
-	}
-	a, ok := s.Areas.ByInternal[key]
-	if !ok || a.X == nil || a.Y == nil {
-		return 0, 0, false
-	}
-	return *a.X, *a.Y, true
+	return fallbackAreaCoords(area)
 }
 
 // areaDistance returns the Euclidean distance between two areas (by friendly
@@ -650,6 +648,20 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	if err := config.Save(next); err != nil {
 		http.Error(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// Update live components, mirroring handleConfig — an imported config with
+	// different paths/regex must take effect without a restart.
+	if s.Tailer != nil {
+		s.Tailer.SetDir(next.ChatLogDir)
+	}
+	if s.PLTailer != nil {
+		s.PLTailer.SetPath(next.PlayerLogPath)
+	}
+	if s.Parser != nil {
+		if err := s.Parser.SetRegex(next.LootRegex); err != nil {
+			http.Error(w, "failed to apply loot_regex: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	if s.Favor != nil {
 		s.Favor.SetPlayerPrices(next.PlayerPrices)

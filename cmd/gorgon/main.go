@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -136,13 +137,6 @@ func main() {
 	}
 	log.Printf("loaded %d recipes", len(recipes))
 
-	abilities, err := client.LoadAbilities(ver)
-	if err != nil {
-		log.Printf("load abilities.json: %v (combat stats disabled)", err)
-		abilities = cdn.AbilitiesFile{}
-	}
-	log.Printf("loaded %d abilities", len(abilities))
-
 	nameIdx := indexItemsByName(items)
 	engine := favor.FromNpcs(npcs)
 	engine.SetPlayerPrices(cfg.PlayerPrices)
@@ -248,7 +242,7 @@ func main() {
 
 	// Pass the embedded web FS directly; the embed directive in web/embed.go
 	// uses bare filenames so paths inside the FS have no "web/" prefix.
-	srv := server.New(cfg, mgr, engine, web.Files, t, plTail, parser, traderMgr, items, ver, npcs, areaIdx, skills, recipes, abilities)
+	srv := server.New(cfg, mgr, engine, web.Files, t, plTail, parser, traderMgr, items, ver, npcs, areaIdx, skills, recipes)
 	h := srv.Mount()
 	hs := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -376,7 +370,9 @@ func pruneOldBackups(dir string, keep int) {
 	if len(dirs) <= keep {
 		return
 	}
-	// Sort by name (which is timestamp-sorted)
+	// os.ReadDir order is not guaranteed — sort by timestamp name so the OLDEST
+	// backups are pruned first.
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name() < dirs[j].Name() })
 	for i := 0; i < len(dirs)-keep; i++ {
 		_ = os.RemoveAll(filepath.Join(dir, dirs[i].Name()))
 	}
@@ -473,60 +469,6 @@ func pipeline(ctx context.Context, t *logtail.Tailer, p *loot.Parser, idx itemIn
 
 // playerPipeline routes Player.log events into the session manager.
 func playerPipeline(ctx context.Context, t *logtail.FileTailer, p *playerlog.Parser, mgr *session.Manager) {
-	type recentUse struct {
-		name     string
-		nameNorm string
-		id       int
-		time     time.Time
-	}
-	recent := make([]recentUse, 0, 64)
-
-	normAbility := func(s string) string {
-		s = strings.ToLower(strings.TrimSpace(s))
-		if s == "" {
-			return ""
-		}
-		var b strings.Builder
-		b.Grow(len(s))
-		for _, r := range s {
-			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-				b.WriteRune(r)
-			}
-		}
-		return b.String()
-	}
-
-	pruneRecent := func(now time.Time) {
-		cut := now.Add(-8 * time.Second)
-		j := 0
-		for i := 0; i < len(recent); i++ {
-			if recent[i].time.After(cut) {
-				recent[j] = recent[i]
-				j++
-			}
-		}
-		recent = recent[:j]
-	}
-
-	matchRecentUse := func(ev *playerlog.Event) (recentUse, bool) {
-		now := time.Now()
-		pruneRecent(now)
-		norm := normAbility(ev.AbilityName)
-		for i := len(recent) - 1; i >= 0; i-- {
-			ru := recent[i]
-			if now.Sub(ru.time) > 4*time.Second {
-				continue
-			}
-			if ev.AbilityID > 0 && ru.id > 0 && ev.AbilityID == ru.id {
-				return ru, true
-			}
-			if norm != "" && ru.nameNorm != "" && norm == ru.nameNorm {
-				return ru, true
-			}
-		}
-		return recentUse{}, false
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -546,28 +488,6 @@ func playerPipeline(ctx context.Context, t *logtail.FileTailer, p *playerlog.Par
 				// Login events can be used later for auto-session start
 			case playerlog.KindSkill:
 				// Skill ticks are granular; we already get "You earned N XP" from ChatLogs
-			case playerlog.KindUseAbility:
-				mgr.AddAbilityUseWithID(ev.AbilityName, ev.AbilityID)
-				ru := recentUse{name: ev.AbilityName, nameNorm: normAbility(ev.AbilityName), id: ev.AbilityID, time: time.Now()}
-				recent = append(recent, ru)
-				pruneRecent(time.Now())
-			case playerlog.KindOnAttackHitMe:
-				// Count entity-hit lines only when they match a recent player use.
-				if ru, ok := matchRecentUse(ev); ok {
-					name := ru.name
-					if strings.TrimSpace(name) == "" {
-						name = ev.AbilityName
-					}
-					id := ru.id
-					if id <= 0 {
-						id = ev.AbilityID
-					}
-					if ev.Evaded {
-						mgr.AddCombatEvadeWithID(name, id)
-					} else {
-						mgr.AddCombatHitWithID(name, id)
-					}
-				}
 			case playerlog.KindCorpseSearch:
 				if ev.Mob != "" {
 					mgr.AddKill(ev.Mob)

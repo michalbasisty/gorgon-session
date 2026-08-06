@@ -349,6 +349,14 @@ func Run(serverURL string) error {
 	theOverlay = o
 	defer func() { theOverlay = nil }()
 
+	// Live appearance updates: the web UI saves overlay settings while the
+	// overlay is open, so poll for changes and apply opacity on the fly.
+	// ponytail: 2s poll, fine for a settings slider; a push channel would be
+	// needed only if the overlay ever had dozens of open instances.
+	stopWatch := make(chan struct{})
+	go o.watchConfig(serverURL, stopWatch)
+	defer close(stopWatch)
+
 	// Pull the overlay appearance from the app's config. On ANY failure the
 	// historical hardcoded defaults (98%/78% opacity, bottom-right, dark)
 	// stand in — the overlay never crashes over a missing server.
@@ -478,6 +486,41 @@ func Run(serverURL string) error {
 	procUnregisterHotKey.Call(hwnd, hotkeyClickThrough)
 	procUnregisterHotKey.Call(hwnd, hotkeyClose)
 	return nil
+}
+
+// watchConfig polls the server config and live-applies any opacity /
+// click-through-opacity changes to the open window, so dragging the settings
+// slider in the web UI takes effect without reopening the overlay. Alpha
+// reads/writes are plain uintptrs on aligned fields — atomic in practice on
+// the message-loop thread vs the 2s poll (hotkey toggle reads, watcher
+// writes); a torn read would only ever show the old alpha for one frame.
+func (o *overlay) watchConfig(serverURL string, stop <-chan struct{}) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+		}
+		var cfgResp struct {
+			Overlay config.OverlaySettings `json:"overlay"`
+		}
+		if err := getJSON(serverURL+"/api/config", &cfgResp); err != nil || cfgResp.Overlay.Opacity == 0 {
+			continue // server down / not configured yet — keep current alpha
+		}
+		normal := alphaFromPercent(cfgResp.Overlay.Opacity)
+		clickThru := alphaFromPercent(cfgResp.Overlay.ClickThroughOpacity)
+		if normal == o.alphaNormal && clickThru == o.alphaClickThru {
+			continue
+		}
+		o.alphaNormal, o.alphaClickThru = normal, clickThru
+		alpha := o.alphaNormal
+		if o.clickThrough {
+			alpha = o.alphaClickThru
+		}
+		procSetLayeredWindowAttrs.Call(o.hwnd, 0, alpha, lwaAlpha)
+	}
 }
 
 // getJSON fetches url and decodes its JSON body into v. Any failure returns

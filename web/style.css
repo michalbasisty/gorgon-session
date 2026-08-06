@@ -1490,6 +1490,13 @@ td.route {
   max-width: 600px;
   box-shadow: var(--shadow);
 }
+.settings-form h3 {
+  margin: 0 0 16px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
 .form-group {
   margin-bottom: 20px;
 }
@@ -1569,6 +1576,17 @@ td.route {
   gap: 8px;
   align-items: center;
   margin-top: 12px;
+}
+
+/* Button hierarchy */
+.btn-secondary {
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover {
+  color: var(--fg);
+  border-color: var(--muted);
 }
 
 /* Tracker controls */
@@ -3380,12 +3398,46 @@ body.overlay-mode .modal-body { overflow-x: auto; }
 .overlay-form-grid .form-group.row label { margin: 0; }
 .overlay-form-grid .form-group.row input[type="checkbox"] { width: auto; }
 .overlay-form-grid input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
   padding: 0;
   border: none;
-  background: transparent;
+  border-radius: 3px;
+  background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--range-pct, 98%), var(--border) var(--range-pct, 98%), var(--border) 100%);
   box-shadow: none;
-  accent-color: var(--accent);
   cursor: pointer;
+  outline: none;
+}
+.overlay-form-grid input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+  cursor: pointer;
+  transition: box-shadow 0.15s;
+}
+.overlay-form-grid input[type="range"]::-webkit-slider-thumb:hover {
+  box-shadow: 0 0 0 4px var(--accent-dim);
+}
+.overlay-form-grid input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+  cursor: pointer;
+}
+.overlay-form-grid input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: transparent;
 }
 .overlay-form-grid input[type="color"] {
   padding: 2px 4px;
@@ -3393,7 +3445,15 @@ body.overlay-mode .modal-body { overflow-x: auto; }
   max-width: 140px;
   cursor: pointer;
 }
-.overlay-slider-value { color: var(--accent); font-weight: 700; }
+.overlay-slider-value {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 13px;
+  background: var(--accent-dim);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  margin-left: 4px;
+}
 body.overlay-mode .overlay-form-grid { grid-template-columns: 1fr; }
 
 /* ===== Overlay Light Theme =====

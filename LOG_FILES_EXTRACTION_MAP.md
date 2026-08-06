@@ -43,30 +43,18 @@ This file maps **what the app currently extracts from game `.log` files**, and w
 | `login` | `Welcome to Project Gorgon!` | (event only) | Hook for future auto-session behavior |
 | `zone` | Primary: `Downloading Map [...] for area <zone> runtime key` — Legacy fallback: `You have entered <zone>.` | `zone` | Current zone + zone history |
 | `skill` | `[Status] [WW] Skill '<name>' gained <value>` | `skill`, `value` (int-cast) | Reserved for granular skill tracking |
-| `use_ability` | `UseAbility(Ability(<name>,<id>))` | `ability_name`, `ability_id` | Combat ability uses |
-| `on_attack_hit_me` | `entity_<id>: OnAttackHitMe(Ability(<name>,<id>))` — also name-only form: `entity_<id>: OnAttackHitMe(<name>). Evaded = <True\|False>` | `ability_name`, `ability_id` (0 for the name-only form), `evaded` | Combat outgoing hit count |
 | `corpse_search` | `ProcessTalkScreen(..., "Search Corpse of <mob>", ...)` | `mob` | Loot-source signal (strong hint that loot follows) |
 
 ---
 
-## 4) Derived combat data (from logs + CDN metadata)
+## 4) Derived kill data (from logs)
 
 From log events, the app builds:
-- `uses` per ability
-- `hits` per ability
-- `ability_id` (may be `0` when the hit line is the name-only form)
-- `evaded` flags from hit lines
+- kill events per mob (`corpse_search`) → session `kills` list
 
-Then enriches with CDN ability data:
-- `skill`
-- `damage_type`
-- `base_damage` (from nested `PvE.Damage`)
+Kill tracking works with local logs only — no VIP required.
 
-And computes:
-- `est_dps = (base_damage * events) / session_duration_seconds`
-- where `events = hits` when hit lines exist, otherwise fallback `events = uses`
-
-So combat values are **estimated** from logged usage/hits + static ability metadata, not direct floating combat text totals.
+> **Note:** `use_ability` / `on_attack_hit_me` combat parsing and the combat view (`/api/combat`, `/api/combat/breakdown`) were **removed** — full combat-log data requires a paid VIP subscription.
 
 ---
 
@@ -75,27 +63,22 @@ So combat values are **estimated** from logged usage/hits + static ability metad
 These are feasible with local logs only; no VIP dependency.
 
 ## Already captured in code, but not fully surfaced in UI
-1. **Ability event timeline timestamps**
-   - We already store per-event timestamps for uses and hits.
-   - Can power DPS-over-time and burst windows.
-2. **Zone history timeline**
+1. **Zone history timeline**
    - Every zone transition is timestamped.
-   - Can power per-zone splits for loot/XP/combat.
-3. **Player.log skill tick values (`[WW] Skill ... gained`)**
+   - Can power per-zone splits for loot/XP/kills.
+2. **Player.log skill tick values (`[WW] Skill ... gained`)**
    - Parsed but not yet shown in dedicated UI analytics.
-4. **Login event**
+3. **Login event**
    - Parsed; can trigger optional auto-start session prompt.
 
 ## High-confidence next additions
-1. **Combat timeline stream**
-   - Store ability events with timestamps as a per-fight timeline.
-2. **Per-zone loot and XP split**
+1. **Per-zone loot and XP split**
    - Combine zone transitions with loot/XP timestamps.
-3. **Session phase segmentation**
+2. **Session phase segmentation**
    - Split one run into segments (travel/combat/loot bursts) by event density.
-4. **Top mob kill stats by zone**
+3. **Top mob kill stats by zone**
    - Use `kill` events + current zone.
-5. **Gathering heatmap by zone**
+4. **Gathering heatmap by zone**
    - Use `gather` + zone history.
 
 ## Needs sample-line capture first (format verification)
@@ -116,7 +99,6 @@ For these, we need raw line examples from your actual `Player.log`/chat logs and
 - Session storage model: `internal/session/session.go`
 - Pipelines wiring: `cmd/gorgon/main.go`
 - API shaping for UI: `internal/server/server_data.go`
-- Combat UI rendering: `web/shared.js`
 
 ---
 

@@ -53,19 +53,8 @@ type ZoneEntry struct {
 	Time time.Time `json:"time"`
 }
 
-// AbilityUseEvent records one ability use (from UseAbility in Player.log).
-type AbilityUseEvent struct {
-	Name      string    `json:"name"`
-	AbilityID int       `json:"ability_id,omitempty"`
-	Time      time.Time `json:"time"`
-}
-
-// CombatHitEvent records an outgoing hit (entity_XXX: OnAttackHitMe).
-type CombatHitEvent struct {
-	Ability   string    `json:"ability"`
-	AbilityID int       `json:"ability_id,omitempty"`
-	Time      time.Time `json:"time"`
-}
+// AbilityUseEvent and CombatHitEvent (ability use / hit / evade tracking)
+// were removed: combat log data requires a VIP subscription.
 
 var (
 	ErrAlreadyRunning = errors.New("a session is already running")
@@ -108,24 +97,13 @@ type Manager struct {
 	zone        string
 	zoneHistory []ZoneEntry
 
-	// combat tracking (from Player.log)
-	abilityUses     []AbilityUseEvent
-	combatHits      []CombatHitEvent
-	combatEvades    []CombatHitEvent
-	abilityCounts   map[string]int // ability name -> use count
-	hitCounts       map[string]int // ability name -> outgoing hit count
-	evadeCounts     map[string]int // ability name -> evaded outgoing attempts
-	abilityIDCounts map[int]int    // ability ID -> use count
-	hitIDCounts     map[int]int    // ability ID -> outgoing hit count
-	evadeIDCounts   map[int]int    // ability ID -> evaded outgoing attempts
-
 	subscribersMtx sync.RWMutex
 	subscribers    map[chan Event]struct{}
 	closed         bool
 }
 
 // Event is anything the UI may want to push to clients. Only Loot kinds
-// are emitted today; reserved for combat/crafting later.
+// are emitted today; reserved for crafting later.
 type Event struct {
 	Kind    string      `json:"kind"` // "loot", "session_start", "session_stop"
 	Time    time.Time   `json:"time"`
@@ -160,17 +138,11 @@ type LootEvent struct {
 // New constructs a Manager.
 func New() *Manager {
 	return &Manager{
-		state:           Idle,
-		loot:            []LootEntry{},
-		byItem:          map[string]int{},
-		counts:          map[string]int{},
-		abilityCounts:   map[string]int{},
-		hitCounts:       map[string]int{},
-		evadeCounts:     map[string]int{},
-		abilityIDCounts: map[int]int{},
-		hitIDCounts:     map[int]int{},
-		evadeIDCounts:   map[int]int{},
-		subscribers:     map[chan Event]struct{}{},
+		state:       Idle,
+		loot:        []LootEntry{},
+		byItem:      map[string]int{},
+		counts:      map[string]int{},
+		subscribers: map[chan Event]struct{}{},
 	}
 }
 
@@ -198,15 +170,6 @@ func (m *Manager) Start(dungeon, notes string) error {
 	m.totalGold = 0
 	m.zone = ""
 	m.zoneHistory = m.zoneHistory[:0]
-	m.abilityUses = m.abilityUses[:0]
-	m.combatHits = m.combatHits[:0]
-	m.combatEvades = m.combatEvades[:0]
-	m.abilityCounts = map[string]int{}
-	m.hitCounts = map[string]int{}
-	m.evadeCounts = map[string]int{}
-	m.abilityIDCounts = map[int]int{}
-	m.hitIDCounts = map[int]int{}
-	m.evadeIDCounts = map[int]int{}
 	m.publish(Event{Kind: "session_start", Time: m.startedAt, Payload: map[string]string{"dungeon": dungeon, "notes": notes}})
 	return nil
 }
@@ -267,36 +230,6 @@ func (m *Manager) snapshotLocked() Snapshot {
 	copy(out.Gathering, m.gathering)
 	copy(out.LevelUps, m.levelUps)
 	copy(out.ZoneHistory, m.zoneHistory)
-	out.AbilityUses = make([]AbilityUseEvent, len(m.abilityUses))
-	copy(out.AbilityUses, m.abilityUses)
-	out.CombatHits = make([]CombatHitEvent, len(m.combatHits))
-	copy(out.CombatHits, m.combatHits)
-	out.CombatEvades = make([]CombatHitEvent, len(m.combatEvades))
-	copy(out.CombatEvades, m.combatEvades)
-	out.AbilityCounts = make(map[string]int, len(m.abilityCounts))
-	for k, v := range m.abilityCounts {
-		out.AbilityCounts[k] = v
-	}
-	out.HitCounts = make(map[string]int, len(m.hitCounts))
-	for k, v := range m.hitCounts {
-		out.HitCounts[k] = v
-	}
-	out.EvadeCounts = make(map[string]int, len(m.evadeCounts))
-	for k, v := range m.evadeCounts {
-		out.EvadeCounts[k] = v
-	}
-	out.AbilityIDCounts = make(map[int]int, len(m.abilityIDCounts))
-	for k, v := range m.abilityIDCounts {
-		out.AbilityIDCounts[k] = v
-	}
-	out.HitIDCounts = make(map[int]int, len(m.hitIDCounts))
-	for k, v := range m.hitIDCounts {
-		out.HitIDCounts[k] = v
-	}
-	out.EvadeIDCounts = make(map[int]int, len(m.evadeIDCounts))
-	for k, v := range m.evadeIDCounts {
-		out.EvadeIDCounts[k] = v
-	}
 	return out
 }
 
@@ -315,17 +248,8 @@ type Snapshot struct {
 	Gathering       []GatherEvent     `json:"gathering,omitempty"`
 	LevelUps        []LevelUp         `json:"level_ups,omitempty"`
 	TotalGold       int               `json:"total_gold"`
-	Zone            string            `json:"zone,omitempty"`
-	ZoneHistory     []ZoneEntry       `json:"zone_history,omitempty"`
-	AbilityUses     []AbilityUseEvent `json:"ability_uses,omitempty"`
-	CombatHits      []CombatHitEvent  `json:"combat_hits,omitempty"`
-	CombatEvades    []CombatHitEvent  `json:"combat_evades,omitempty"`
-	AbilityCounts   map[string]int    `json:"ability_counts,omitempty"`
-	HitCounts       map[string]int    `json:"hit_counts,omitempty"`
-	EvadeCounts     map[string]int    `json:"evade_counts,omitempty"`
-	AbilityIDCounts map[int]int       `json:"ability_id_counts,omitempty"`
-	HitIDCounts     map[int]int       `json:"hit_id_counts,omitempty"`
-	EvadeIDCounts   map[int]int       `json:"evade_id_counts,omitempty"`
+	Zone            string       `json:"zone,omitempty"`
+	ZoneHistory     []ZoneEntry  `json:"zone_history,omitempty"`
 }
 
 // AddLoot records one looted item (or increments an existing entry).
@@ -457,8 +381,9 @@ func (m *Manager) AddGold(amount int) {
 		return
 	}
 	m.totalGold += amount
+	total := m.totalGold
 	m.mu.Unlock()
-	m.publish(Event{Kind: "gold", Time: time.Now(), Payload: map[string]int{"total": m.totalGold}})
+	m.publish(Event{Kind: "gold", Time: time.Now(), Payload: map[string]int{"total": total}})
 }
 
 // SetZone updates the current zone (from Player.log).
@@ -468,67 +393,6 @@ func (m *Manager) SetZone(zone string) {
 	m.zoneHistory = append(m.zoneHistory, ZoneEntry{Zone: zone, Time: time.Now()})
 	m.mu.Unlock()
 	m.publish(Event{Kind: "zone", Time: time.Now(), Payload: map[string]string{"zone": zone}})
-}
-
-// AddAbilityUse records an ability use (from Player.log UseAbility).
-func (m *Manager) AddAbilityUse(name string) {
-	m.AddAbilityUseWithID(name, 0)
-}
-
-// AddAbilityUseWithID records an ability use and tracks both name and ID.
-func (m *Manager) AddAbilityUseWithID(name string, abilityID int) {
-	m.mu.Lock()
-	if m.state != Running {
-		m.mu.Unlock()
-		return
-	}
-	e := AbilityUseEvent{Name: name, AbilityID: abilityID, Time: time.Now()}
-	m.abilityUses = append(m.abilityUses, e)
-	m.abilityCounts[name]++
-	if abilityID > 0 {
-		m.abilityIDCounts[abilityID]++
-	}
-	m.mu.Unlock()
-	m.publish(Event{Kind: "ability_use", Time: e.Time, Payload: e})
-}
-
-// AddCombatHit records an outgoing combat hit (entity_XXX: OnAttackHitMe).
-func (m *Manager) AddCombatHit(ability string) {
-	m.AddCombatHitWithID(ability, 0)
-}
-
-// AddCombatHitWithID records an outgoing combat hit and tracks both name and ID.
-func (m *Manager) AddCombatHitWithID(ability string, abilityID int) {
-	m.mu.Lock()
-	if m.state != Running {
-		m.mu.Unlock()
-		return
-	}
-	e := CombatHitEvent{Ability: ability, AbilityID: abilityID, Time: time.Now()}
-	m.combatHits = append(m.combatHits, e)
-	m.hitCounts[ability]++
-	if abilityID > 0 {
-		m.hitIDCounts[abilityID]++
-	}
-	m.mu.Unlock()
-	m.publish(Event{Kind: "combat_hit", Time: e.Time, Payload: e})
-}
-
-// AddCombatEvadeWithID records an evaded outgoing attack attempt.
-func (m *Manager) AddCombatEvadeWithID(ability string, abilityID int) {
-	m.mu.Lock()
-	if m.state != Running {
-		m.mu.Unlock()
-		return
-	}
-	e := CombatHitEvent{Ability: ability, AbilityID: abilityID, Time: time.Now()}
-	m.combatEvades = append(m.combatEvades, e)
-	m.evadeCounts[ability]++
-	if abilityID > 0 {
-		m.evadeIDCounts[abilityID]++
-	}
-	m.mu.Unlock()
-	m.publish(Event{Kind: "combat_evade", Time: e.Time, Payload: e})
 }
 
 // RemoveLoot removes entries matching name from the active session.

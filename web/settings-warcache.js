@@ -74,7 +74,8 @@ $('#settings-form').addEventListener('submit', async (e) => {
 // Contract (shared with the native window lane): cfg.overlay =
 // { opacity, click_through_opacity, click_through_by_default, position,
 //   theme, accent_color }. The API merges partial updates, so posting just
-// the overlay object is fine. Changes apply the next time the overlay opens.
+// the overlay object is fine. Opacity changes apply live to a running overlay;
+// position, theme, and accent apply the next time it opens.
 
 const OVERLAY_DEFAULTS = {
   opacity: 98,
@@ -94,11 +95,43 @@ function presetOverlayControls(ov) {
   $('#overlay-accent').value = ov.accent_color;
   $('#overlay-opacity-value').textContent = ov.opacity + '%';
   $('#overlay-click-opacity-value').textContent = ov.click_through_opacity + '%';
+  updateSliderFill($('#overlay-opacity'));
+  updateSliderFill($('#overlay-click-opacity'));
 }
 
-// Live % readouts next to the sliders
-$('#overlay-opacity')?.addEventListener('input', e => { $('#overlay-opacity-value').textContent = e.target.value + '%'; });
-$('#overlay-click-opacity')?.addEventListener('input', e => { $('#overlay-click-opacity-value').textContent = e.target.value + '%'; });
+// Range-input filled track: sets a CSS custom property the gradient reads
+function updateSliderFill(el) {
+  const pct = ((el.value - el.min) / (el.max - el.min)) * 100;
+  el.style.setProperty('--range-pct', pct + '%');
+}
+
+// Live % readouts + filled track + debounced autosave
+let _overlaySaveTimer = null;
+function scheduleOverlaySave() {
+  clearTimeout(_overlaySaveTimer);
+  _overlaySaveTimer = setTimeout(() => {
+    const overlay = {
+      opacity: parseInt($('#overlay-opacity').value, 10),
+      click_through_opacity: parseInt($('#overlay-click-opacity').value, 10),
+      click_through_by_default: $('#overlay-click-through').checked,
+      position: $('#overlay-position').value,
+      theme: $('#overlay-theme').value,
+      accent_color: $('#overlay-accent').value
+    };
+    saveOverlaySettings(overlay);
+  }, 300);
+}
+
+$('#overlay-opacity')?.addEventListener('input', e => {
+  $('#overlay-opacity-value').textContent = e.target.value + '%';
+  updateSliderFill(e.target);
+  scheduleOverlaySave();
+});
+$('#overlay-click-opacity')?.addEventListener('input', e => {
+  $('#overlay-click-opacity-value').textContent = e.target.value + '%';
+  updateSliderFill(e.target);
+  scheduleOverlaySave();
+});
 
 async function saveOverlaySettings(overlay) {
   try {

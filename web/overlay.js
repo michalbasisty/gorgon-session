@@ -28,7 +28,6 @@ const fmtNum = v => (Number(v) || 0).toLocaleString();
 const els = {
   state: document.getElementById('ov-state'),
   elapsed: document.getElementById('ov-elapsed'),
-  dps: document.getElementById('ov-dps'),
   loot: document.getElementById('ov-loot'),
   traders: document.getElementById('ov-traders-count'),
   capacity: document.getElementById('ov-capacity'),
@@ -38,15 +37,13 @@ const els = {
 let lastSession = null;
 
 async function poll() {
-  const [s, combat, traders, schedule] = await Promise.all([
+  const [s, traders, schedule] = await Promise.all([
     api('/api/session'),
-    api('/api/combat'),
     api('/api/traders'),
     api('/api/traders/schedule'),
   ]);
   lastSession = s || lastSession;
   renderSession(s || lastSession);
-  renderCombat(combat, s || lastSession);
   renderTraders(traders, schedule);
 }
 
@@ -65,17 +62,6 @@ function renderSession(s) {
   const loot = Array.isArray(s.loot) ? s.loot : [];
   const total = loot.reduce((sum, l) => sum + (Number(l.value) || 0) * (Number(l.count) || 0), 0);
   els.loot.textContent = fmtNum(Math.round(total)) + 'g';
-}
-
-function renderCombat(combat, s) {
-  if (!els.dps) return;
-  const running = s && s.state === 'running';
-  if (!running || !Array.isArray(combat) || combat.length === 0) {
-    els.dps.textContent = '—';
-    return;
-  }
-  const dps = combat.reduce((sum, a) => sum + (Number(a.est_dps) || 0), 0);
-  els.dps.textContent = fmtNum(Math.round(dps));
 }
 
 function renderTraders(traders, schedule) {

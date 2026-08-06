@@ -71,7 +71,7 @@ async function main() {
       return httpRes(map[name] || null);
     }
     if (path.startsWith('/api/route-planner?item=')) {
-      const item = decodeURIComponent(path.split('item=')[1]);
+      const item = decodeURIComponent(path.split('item=')[1]).split('&')[0];
       const routes = item === 'Apples'
         ? [{ trader: 'Farmer Fred', area: 'Cocoon' }, { trader: 'Distant Dan', area: 'Serbule' }]
         : [{ trader: 'Farmer Fred', area: 'Cocoon' }];

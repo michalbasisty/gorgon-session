@@ -90,7 +90,7 @@ Manages persistent settings stored in `~/.gorgon-session/config.json`.
       Overlay               OverlaySettings   `json:"overlay"`
   }
   ```
-  `OverlaySettings` (read by the overlay process at startup) has:
+  `OverlaySettings` (read by the overlay process at startup; opacity changes are additionally **polled live** — the overlay re-applies `opacity`/`click_through_opacity` within ~2s while open, no restart needed) has:
   `opacity` (30..100, default 98), `click_through_opacity` (default 78), `click_through_by_default` (default false), `position` (`"bottom-right"`|`"bottom-left"`|`"top-right"`|`"top-left"`), `theme` (`"dark"`|`"light"`), `accent_color` (hex, e.g. `#5b93ff`).
 - **Platform-Specific Defaults**:
   - **Windows**: `%USERPROFILE%\AppData\LocalLow\Elder Game\Project Gorgon\ChatLogs`
@@ -101,7 +101,7 @@ Manages persistent settings stored in `~/.gorgon-session/config.json`.
 Fetches, caches, and parses game data from `cdn.projectgorgon.com`.
 
 - **Version Detection**: Queries `http://client.projectgorgon.com/fileversion.txt` to discover the latest game version (e.g., `v481`). If unreachable, it falls back to the configured `fallback_version`.
-- **Caching Strategy**: Downloads CDN data files (`items.json`, `npcs.json`, `areas.json`, `skills.json`, `recipes.json`, `abilities.json`) and saves them under `~/.gorgon-session/cache/<version>/`. Subsequent runs read directly from the local cache, ensuring offline capability and instant startup.
+- **Caching Strategy**: Downloads CDN data files (`items.json`, `npcs.json`, `areas.json`, `skills.json`, `recipes.json`) and saves them under `~/.gorgon-session/cache/<version>/`. Subsequent runs read directly from the local cache, ensuring offline capability and instant startup.
 - **Data Models**:
   - `Item`: Represents item metadata (ID, name, description, value, keywords, icon).
   - `Npc`: Represents NPC metadata, including area location, gift preferences, and services.
@@ -159,7 +159,7 @@ Exposes the REST API and streams live updates.
 - **Server-Sent Events (SSE)**: The `/api/feed` endpoint establishes a persistent, one-way connection to the browser. It streams live events as they happen and sends a `:ping` every 15 seconds to keep the connection alive and prevent timeouts.
 
 ### 2.9. Web Dashboard (`web/index.html` + `web/shared.js` + view modules)
-A modern, dark-themed Single Page Application (SPA) built with vanilla JavaScript and CSS. The dashboard is split across `web/shared.js` (core state, routing, tracker, dashboard, items, skills, combat, drop rates, overlay glue), `web/summary.js`, `web/history.js`, `web/favor-traders.js`, `web/settings-warcache.js`, and `web/init.js` (bootstrap).
+A modern, dark-themed Single Page Application (SPA) built with vanilla JavaScript and CSS. The dashboard is split across `web/shared.js` (core state, routing, tracker, dashboard, items, skills, drop rates, overlay glue), `web/summary.js`, `web/history.js`, `web/favor-traders.js`, `web/settings-warcache.js`, and `web/init.js` (bootstrap).
 
 - **State Management**: Maintains a local `state` object tracking the active session, current view, list of NPCs, disabled NPCs, crafting recipes, and favor progress.
 - **Local Storage Integration**:
@@ -176,7 +176,6 @@ A modern, dark-themed Single Page Application (SPA) built with vanilla JavaScrip
   - **Item Catalog**: Searchable item metadata from the CDN.
   - **Warcache**: CDN cache status and refresh controls.
   - **Skills**: Skill list with XP gain per skill.
-  - **Combat**: Ability usage, hits, and estimated DPS from Player.log + CDN ability data.
   - **Recipes**: Recipe search with material checklists and a profit calculator.
   - **Drop Rates**: Per-item drop chances broken down per enemy and per zone, with a zone filter.
   - **Settings**: Live-editable settings, backup controls, and overlay settings (opacity, theme, accent, position, click-through).
@@ -190,7 +189,7 @@ The following trace shows how a single loot event flows through the system:
 ```
 [Game Client]
       |
-      | 1. Writes line to ChatLogs/ChatLog.txt:
+      | 1. Writes line to ChatLogs/Chat-<date>.log:
       |    "[Status] Iron Ore x3 added to inventory."
       v
 [internal/logtail (Tailer)]
@@ -253,16 +252,42 @@ All API endpoints bind to `http://127.0.0.1:7777` by default.
 | Method | Path | Description | Request Body | Response Schema |
 | :--- | :--- | :--- | :--- | :--- |
 | **GET** | `/` | Serves the embedded dashboard HTML. | — | `text/html` |
+| **GET** | `/overlay` | Serves the standalone overlay HUD page (`overlay.html`). | — | `text/html` |
 | **GET** | `/style.css` | Serves the dashboard stylesheet. | — | `text/css` |
 | **GET** | `/shared.js` | Serves the dashboard JavaScript (plus `summary.js`, `history.js`, `favor-traders.js`, `settings-warcache.js`, `init.js`). | — | `application/javascript` |
 | **GET** | `/api/session` | Retrieves the current session snapshot. | — | `Snapshot` (see below) |
 | **POST** | `/api/session/start` | Starts a new session. | `{"dungeon": "Serbule Crypt"}` | `Snapshot` |
 | **POST** | `/api/session/stop` | Stops the active session and writes a report. | — | `Snapshot` |
-| **GET** | `/api/loot` | Retrieves only the list of looted items. | — | `[]LootEntry` |
-| **GET** | `/api/config` | Retrieves the current configuration. **POST** (or PUT) merges partial updates over the existing config (unset fields keep their values, including overlay settings) and persists to `config.json`. | — / partial `Config` | `Config` |
-| **GET** | `/api/npcs` | Retrieves a list of all indexed NPCs. | — | `[]NPCInfo` |
-| **GET** | `/api/sessions` | Retrieves a summary list of all past sessions. | — | `[]SessionSummary` |
-| **GET** | `/api/session/{id}` | Retrieves details of a specific past session. | — | `Snapshot` |
+| **GET** | `/api/session/{id}` | Details of a specific past session report. | — | `Snapshot` |
+| **GET** | `/api/sessions` | Summary list of all past sessions. | — | `[]SessionSummary` |
+| **GET** | `/api/loot` | List of looted items in the active session. | — | `[]LootEntry` |
+| **POST** | `/api/loot-note` | Add/edit a note on a looted item. | `{name, note}` | — |
+| **GET** | `/api/feed` | **SSE** live event stream (see §4.2). | — | `text/event-stream` |
+| **GET** | `/api/config` | Current configuration. **POST** (or PUT) merges partial updates — top-level fields are merged per-field; the nested `overlay` object is replaced as a whole (the UI always submits it complete) — and persists to `config.json`, hot-applying path/regex/price changes to the running tailers and engine. | — / partial `Config` | `Config` |
+| **GET** | `/api/export` | Downloads all settings as JSON. | — | `application/json` |
+| **POST** | `/api/import` | Restores a settings export and hot-applies it to the running tailers/parser/engine. | export JSON | `{ok}` |
+| **GET** | `/api/npcs` | All indexed NPCs. | — | `[]NPCInfo` |
+| **GET** | `/api/areas` | Zone/area metadata. | — | `AreasFile` |
+| **GET** | `/api/skills` | Skill metadata + per-skill XP. | — | `SkillsFile` |
+| **GET** | `/api/items` | Full item catalog (filtering is client-side). | — | `[]Item` |
+| **GET** | `/api/recipes` | Full recipe list. | — | `RecipesFile` |
+| **GET** | `/api/recipes/search` | Recipe search by name/skill/level. | `?q=&skill=&level=` | `{recipes: []RecipeHit}` |
+| **GET** | `/api/crafting/profit` | Top profit recipes for a skill. | `?skill=&max_level=` | `{recipes: [...]}` |
+| **GET** | `/api/prices` | Price summary for all items. | — | `map` |
+| **GET** | `/api/prices/{name}` | Price summary for one item. | — | `Summary` |
+| **GET** | `/api/prices/trends` | Price history for one item. | `?name=` | `{entries: [...]}` |
+| **GET** | `/api/zone-npcs` | NPCs in the current zone. | — | `[]` |
+| **GET** | `/api/drop-rates` | Per-enemy/per-zone drop rates. | `?zone=` | `[]` |
+| **GET** | `/api/traders` | All traders + weekly limits. | — | `[]` |
+| **GET** | `/api/traders/schedule` | Trader refresh schedule. | — | `[]` |
+| **GET** | `/api/traders/history` | Trader refresh event history. | — | `[]` |
+| **GET** | `/api/traders/history/export` | Trader history CSV export. | — | `text/csv` |
+| **POST** | `/api/traders/history/delete` | Delete trader history. | — | — |
+| **GET** | `/api/route-planner` | Route plan for one item **or** one trader (not both). | `?item=` XOR `?trader=` | `{routes: []RouteInfo}` |
+| **GET** | `/api/sessions/compare` | Side-by-side comparison of two sessions. | `?a=&b=` | — |
+| **POST** | `/api/sessions/bulk-export` | Download selected session reports. | `{ids: [...]}` | zip/file |
+| **GET** | `/api/notes/export` | Export all session notes. | — | — |
+| **POST** | `/api/overlay/spawn` | Spawns the native overlay window as a detached process. | — | `{ok}` |
 
 ### 4.2. SSE Stream (`/api/feed`)
 Establishes a persistent Server-Sent Events stream. Events are formatted as JSON payloads.
@@ -398,10 +423,41 @@ The application includes several diagnostic flags to verify the integrity of the
 
 Several originally planned Phase 2 features are already shipped:
 
-1. **Crafting Planner** ✅ shipped — `internal/cdn/client.go` fetches and caches `recipes.json` (plus `areas.json`, `skills.json`, `abilities.json`); the **Recipes** view searches recipes with material checklists, backed by `/api/recipes`, `/api/recipes/search`, and `/api/crafting/profit`.
-2. **Combat Logger Expansion** ✅ shipped — `internal/playerlog/parser.go` parses combat lines (`use_ability`, `on_attack_hit_me` incl. name-only and evaded forms, `corpse_search`); `/api/combat` and `/api/combat/breakdown` feed the **Combat** view (uses, hits, estimated DPS).
+1. **Crafting Planner** ✅ shipped — `internal/cdn/client.go` fetches and caches `recipes.json` (plus `areas.json`, `skills.json`); the **Recipes** view searches recipes with material checklists, backed by `/api/recipes`, `/api/recipes/search`, and `/api/crafting/profit`.
+2. **Combat Logger Expansion** ❌ removed — the combat view (`use_ability`, `on_attack_hit_me` parsing, `/api/combat`, `/api/combat/breakdown`, ability-based DPS estimation) was dropped because full combat-log data requires a paid VIP subscription the app doesn't assume. Kill tracking via `corpse_search` remains.
 3. **Live Configuration Editing** ✅ shipped — `POST /api/config` (see §4.1) merges partial overrides, persists them to `config.json`, and hot-reloads the tailers/parser.
+4. **Route Planner** ✅ shipped — `/api/route-planner` (`?item=` XOR `?trader=`) returns ranked trader routes with capacity, refresh time and distance; see `test/routeplan.test.js`.
+5. **Native Overlay** ✅ shipped — Windows WebView2 always-on-top HUD (`/api/overlay/spawn`, `-overlay`); opacity/theme/accent/position/click-through config with **live opacity updates**.
 
 Still not implemented:
 
-4. **Inventory & Storage Management** — a parser for the in-game character-export JSON (inventory, vault storage, pocket dimensions), storage mapping, and a global item search across vaults.
+6. **Inventory & Storage Management** — a parser for the in-game character-export JSON (inventory, vault storage, pocket dimensions), storage mapping, and a global item search across vaults.
+
+---
+
+## 7. Testing & Coverage
+
+`go test ./...` covers the Go backend; frontend tests live in `test/` (Node.js, see `CONTRIBUTING.md`).
+
+Approximate coverage at the time of writing:
+
+| Package | Coverage | Notes |
+| --- | --- | --- |
+| `internal/playerlog` | 100% | full parser table tests |
+| `internal/prices` | ~92% | add/summarize/persist round-trip |
+| `internal/loot` | ~90% | parser tests |
+| `internal/cdn` | ~86% | `keyID`/`IconURL`/mock-server `Fetch` + caching |
+| `internal/favor` | ~83% | routing engine tests |
+| `internal/session` | ~75% | lifecycle/aggregation tests |
+| `internal/logtail` | ~68% | split-line + tailer rotation/partial-line tests |
+| `internal/trader` | ~68% | limits + schedule tests |
+| `internal/server` | ~61% | handler tests (config merge/live-update, import, route-planner, sessions, static) |
+| `internal/config` | ~47% | defaults/merge tests |
+| `cmd/gorgon` | ~37% | wiring tests for both pipelines, item index, backup/prune (`main()` needs a live CDN, untested) |
+| `internal/overlay` | low | Windows-only; `cornerPos`/`alphaFromPercent` are the pure testable parts |
+| `web/` (JS) | thin | `test/routeplan.test.js` (route planner) + `test/shared-utils.test.js` (warcache solver, pure helpers); DOM renderers untested |
+
+Notes:
+- `go test -race` requires a C toolchain (`gcc`); on machines without one, audit concurrency-sensitive code manually (session manager, tailers, trader manager, favor player-prices).
+- Known bug class: reading a shared field after releasing its mutex (e.g. publishing an SSE event with a value read post-unlock). Snapshot under the lock, publish outside it.
+

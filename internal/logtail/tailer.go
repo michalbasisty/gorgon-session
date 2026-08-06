@@ -34,6 +34,11 @@ type Tailer struct {
 
 	curFile   string
 	curOffset int64
+
+	// lastEmptyLog is when the "no .log files found" warning was last logged;
+	// the message is rate-limited because it fires every poll while the game
+	// is closed (2x/sec otherwise).
+	lastEmptyLog time.Time
 }
 
 // New constructs a Tailer for the given chat-logs directory. Start must be
@@ -126,7 +131,15 @@ func (t *Tailer) pollOnce(ctx context.Context) {
 		}
 	}
 	if newest == "" {
-		log.Printf("tailer: no .log files found in %q", dir)
+		t.mu.Lock()
+		silent := time.Since(t.lastEmptyLog) < 30*time.Second
+		if !silent {
+			t.lastEmptyLog = time.Now()
+		}
+		t.mu.Unlock()
+		if !silent {
+			log.Printf("tailer: no .log files found in %q", dir)
+		}
 		return
 	}
 	if newest != curFile {

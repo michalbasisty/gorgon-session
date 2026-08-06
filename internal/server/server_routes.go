@@ -74,8 +74,6 @@ func (s *Server) Mount() http.Handler {
 	mux.HandleFunc("/api/prices", s.handlePrices)
 	mux.HandleFunc("/api/prices/", s.handlePriceByName)
 	mux.HandleFunc("/api/prices/trends", s.handlePriceTrends)
-	mux.HandleFunc("/api/combat", s.handleCombat)
-	mux.HandleFunc("/api/combat/breakdown", s.handleCombatBreakdown)
 	mux.HandleFunc("/api/zone-npcs", s.handleZoneNPCs)
 	mux.HandleFunc("/api/drop-rates", s.handleDropRates)
 	mux.HandleFunc("/api/sessions/bulk-export", s.handleBulkExport)

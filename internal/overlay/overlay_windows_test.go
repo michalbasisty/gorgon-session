@@ -23,3 +23,30 @@ func TestAlphaFromPercent(t *testing.T) {
 		}
 	}
 }
+
+func TestCornerPos(t *testing.T) {
+	cases := []struct {
+		name       string
+		pos        string
+		wa         rect
+		wantX, wantY int32
+	}{
+		{"top-left", "top-left", rect{0, 0, 1920, 1040}, 12, 12},
+		{"top-right", "top-right", rect{0, 0, 1920, 1040}, 1448, 12},
+		{"bottom-left", "bottom-left", rect{0, 0, 1920, 1040}, 12, 268},
+		{"bottom-right", "bottom-right", rect{0, 0, 1920, 1040}, 1448, 268},
+		{"unknown falls back to bottom-right", "garbage", rect{0, 0, 1920, 1040}, 1448, 268},
+		{"empty falls back to bottom-right", "", rect{0, 0, 1920, 1040}, 1448, 268},
+		{"non-zero origin top-left", "top-left", rect{100, 50, 1500, 800}, 112, 62},
+		{"non-zero origin bottom-right", "bottom-right", rect{100, 50, 1500, 800}, 1028, 28},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			x, y := cornerPos(c.pos, c.wa)
+			if x != c.wantX || y != c.wantY {
+				t.Errorf("cornerPos(%q, %+v) = (%d, %d), want (%d, %d)",
+					c.pos, c.wa, x, y, c.wantX, c.wantY)
+			}
+		})
+	}
+}

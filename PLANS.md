@@ -10,7 +10,7 @@ Features added using only game log files, local app storage, and public Project 
 - **Trader capacity warnings** — the Shops & Traders view shows each trader's remaining weekly capacity.
 - **Compare sessions side-by-side** (zone A vs zone B) — `/api/sessions/compare`.
 - **Historical trend view for key items** — `/api/prices/trends`.
-- **Ability efficiency metrics** (uses, hits, estimated contribution) — Combat view backed by `/api/combat` + `/api/combat/breakdown`.
+- **Kill tracking** — mob kills from `corpse_search` lines (no VIP required).
 - **Overlay mini-panels with compact live stats** — native WebView2 always-on-top overlay.
 - **Export/import by feature scope** — settings export (`/api/export`, `/api/import`), trader history CSV, notes export, sessions bulk export.
 - **Tests for config update semantics and session ID validation** — `internal/config/config_test.go`, `internal/server/server_test.go`.
@@ -21,7 +21,7 @@ Features added using only game log files, local app storage, and public Project 
 
 - Session goals (target gold, target drops, target favor)
 - Zone-specific performance summary (value/hour, deaths, kill pace)
-- Better timeline view (loot, zone changes, combat spikes)
+- Better timeline view (loot, zone changes)
 - Session tags + fast filtering in history
 - "Use remaining capacity first" recommendations
 - Multi-step sell checklist per session
@@ -35,9 +35,8 @@ Features added using only game log files, local app storage, and public Project 
 - "Loot useful for tracked recipes" highlight in tracker
 - Skill-focused recipe view (what to farm for chosen skill)
 - Craft queue planner (materials needed across multiple recipes)
-- Combat pacing timeline during session
 - Death context summary (zone, recent events)
-- Build practice dashboards (per-session combat trends)
+- Build practice dashboards (per-session trends)
 - Startup profile (default view, refresh cadence, compact mode)
 - Better onboarding wizard for first run
 - Keyboard shortcuts help panel

@@ -1,8 +1,8 @@
 // Package cdn fetches and caches JSON data from cdn.projectgorgon.com.
 //
 // Only items.json and npcs.json are loaded for the dungeon-session MVP.
-// The package is structured so future phases (crafting, combat) can add
-// more sources with one line per file.
+// The package is structured so future phases (crafting) can add more
+// sources with one line per file.
 package cdn
 
 import (
@@ -302,40 +302,6 @@ func (c *Client) LoadRecipes(v Version) (RecipesFile, error) {
 		return nil, err
 	}
 	var f RecipesFile
-	if err := json.Unmarshal(b, &f); err != nil {
-		return nil, err
-	}
-	return f, nil
-}
-
-// ---- Ability types ------------------------------------------------
-
-// Ability is one row from abilities.json.
-type Ability struct {
-	InternalName string `json:"InternalName"`
-	Name         string `json:"Name"`
-	Skill        string `json:"Skill"`
-	DamageType   string `json:"DamageType"`
-	PvE          struct {
-		Damage float64 `json:"Damage"`
-	} `json:"PvE"`
-}
-
-// BaseDamage returns PvE base damage value used for estimated DPS.
-func (a Ability) BaseDamage() float64 {
-	return a.PvE.Damage
-}
-
-// AbilitiesFile is the JSON root of abilities.json (map of internal key -> Ability).
-type AbilitiesFile map[string]Ability
-
-// LoadAbilities parses abilities.json into typed form.
-func (c *Client) LoadAbilities(v Version) (AbilitiesFile, error) {
-	b, err := c.Fetch(v, "abilities")
-	if err != nil {
-		return nil, err
-	}
-	var f AbilitiesFile
 	if err := json.Unmarshal(b, &f); err != nil {
 		return nil, err
 	}

@@ -27,8 +27,6 @@ const state = {
   prioritizedNPCs: new Set(),
   notificationThreshold: 500,
   priceHistory: {}, // item name → { average, last, count }
-  combatData: null,
-  combatOverrides: {}, // ability key -> { direct_damage, dot_parts:[{ element, damage, seconds }] }
   zoneNpcs: [],
   dropRates: null,
   dropZone: undefined, // active zone filter ('' = all zones); undefined = not chosen yet
@@ -47,7 +45,6 @@ let __trackerLootSig = '';
 let __trackerEventsSig = '';
 let __trackerNotesSig = '';
 let __pricePollTick = 0;
-let __combatPollTick = 0;
 let __tradersZoneSig = '';
 
 // Load settings from localStorage
@@ -69,8 +66,6 @@ function loadSettings() {
     state.hiddenTraders = new Set(hiddenTraders);
     const prioritizedNPCs = JSON.parse(localStorage.getItem('prioritizedNPCs') || '[]');
     state.prioritizedNPCs = new Set(prioritizedNPCs);
-    const combatOverrides = JSON.parse(localStorage.getItem('combatOverrides') || '{}');
-    state.combatOverrides = combatOverrides && typeof combatOverrides === 'object' ? combatOverrides : {};
   } catch (e) {
     state.disabledNPCs = new Set();
     state.shopNPCs = [];
@@ -80,7 +75,6 @@ function loadSettings() {
     state.hiddenAreas = new Set();
     state.hiddenTraders = new Set();
     state.prioritizedNPCs = new Set();
-    state.combatOverrides = {};
   }
 }
 
@@ -93,7 +87,6 @@ function saveSettings() {
   localStorage.setItem('hiddenAreas', JSON.stringify([...state.hiddenAreas]));
   localStorage.setItem('hiddenTraders', JSON.stringify([...state.hiddenTraders]));
   localStorage.setItem('prioritizedNPCs', JSON.stringify([...state.prioritizedNPCs]));
-  localStorage.setItem('combatOverrides', JSON.stringify(state.combatOverrides || {}));
 }
 
 loadSettings();
@@ -160,17 +153,6 @@ function parseResetDurationMinutes(text) {
 
   const total = days * 24 * 60 + hours * 60 + mins;
   return Number.isFinite(total) && total >= 0 ? total : Number.POSITIVE_INFINITY;
-}
-
-function combatAbilityKey(a) {
-  if (a && a.ability_id) return `id:${a.ability_id}`;
-  const name = String(a?.name || '').trim().toLowerCase();
-  return `name:${name}`;
-}
-
-function getCombatOverride(a) {
-  const key = combatAbilityKey(a);
-  return state.combatOverrides?.[key] || null;
 }
 
 function normalizeTargetKind(v) {
@@ -247,102 +229,6 @@ function formatDotPartsSpec(parts) {
     })
     .join(', ');
 }
-
-function getAbilityDamageModel(a) {
-  const ov = getCombatOverride(a) || {};
-  const base = Number(a?.base_damage || 0);
-  const baseType = String(a?.damage_type || 'Unknown').trim() || 'Unknown';
-
-  let directParts = [];
-  if (Array.isArray(ov.direct_parts) && ov.direct_parts.length) {
-    directParts = ov.direct_parts
-      .map(p => ({
-        element: String(p?.element || '').trim() || baseType,
-        damage: Number(p?.damage || 0),
-        target: normalizeTargetKind(p?.target || 'health'),
-      }))
-      .filter(p => Number.isFinite(p.damage) && p.damage >= 0);
-  } else {
-    let directHealth = Number(ov.direct_damage);
-    if (!Number.isFinite(directHealth) || directHealth < 0) directHealth = base;
-    const directArmor = Number.isFinite(Number(ov.direct_armor_damage)) && Number(ov.direct_armor_damage) > 0
-      ? Number(ov.direct_armor_damage)
-      : 0;
-    if (directHealth > 0) directParts.push({ element: baseType, damage: directHealth, target: 'health' });
-    if (directArmor > 0) directParts.push({ element: baseType, damage: directArmor, target: 'armor' });
-  }
-
-  let dotParts = [];
-  if (Array.isArray(ov.dot_parts)) {
-    dotParts = ov.dot_parts
-      .map(p => ({
-        element: String(p?.element || '').trim() || 'Unknown',
-        damage: Number(p?.damage || 0),
-        seconds: Number(p?.seconds || 0),
-        target: normalizeTargetKind(p?.target || 'health'),
-      }))
-      .filter(p => Number.isFinite(p.damage) && p.damage >= 0 && Number.isFinite(p.seconds) && p.seconds > 0);
-  } else {
-    // Backward compatibility for older single-DoT overrides.
-    const dot = Number(ov.dot_damage);
-    const dotSec = Number(ov.dot_seconds);
-    if (Number.isFinite(dot) && dot > 0 && Number.isFinite(dotSec) && dotSec > 0) {
-      dotParts = [{ element: String(ov.dot_element || 'Unknown'), damage: dot, seconds: dotSec, target: 'health' }];
-    }
-  }
-
-  const directTotal = directParts.reduce((s, p) => s + p.damage, 0);
-  const dotTotal = dotParts.reduce((s, p) => s + p.damage, 0);
-  const castHealth = directParts.reduce((s, p) => s + (p.target === 'health' ? p.damage : 0), 0) +
-    dotParts.reduce((s, p) => s + (p.target === 'health' ? p.damage : 0), 0);
-  const castArmor = directParts.reduce((s, p) => s + (p.target === 'armor' ? p.damage : 0), 0) +
-    dotParts.reduce((s, p) => s + (p.target === 'armor' ? p.damage : 0), 0);
-
-  return {
-    directParts,
-    directTotal,
-    dotParts,
-    dotTotal,
-    castHealth,
-    castArmor,
-    castTotal: directTotal + dotTotal,
-    directPartsSpec: formatDirectPartsSpec(directParts),
-    dotPartsSpec: formatDotPartsSpec(dotParts),
-  };
-}
-
-window.saveCombatOverrideFromRow = function(btn) {
-  const row = btn?.closest('tr');
-  if (!row) return;
-  const key = btn.dataset.key;
-  if (!key) return;
-  const direct = Number(row.querySelector('.ov-direct')?.value);
-  const directArmor = Number(row.querySelector('.ov-direct-armor')?.value);
-  const directPartsSpec = row.querySelector('.ov-directparts')?.value || '';
-  const dotPartsSpec = row.querySelector('.ov-dotparts')?.value || '';
-  const directParts = parseDirectPartsSpec(directPartsSpec);
-  const dotParts = parseDotPartsSpec(dotPartsSpec);
-
-  if (!state.combatOverrides || typeof state.combatOverrides !== 'object') state.combatOverrides = {};
-  state.combatOverrides[key] = {
-    direct_damage: Number.isFinite(direct) && direct >= 0 ? direct : 0,
-    direct_armor_damage: Number.isFinite(directArmor) && directArmor >= 0 ? directArmor : 0,
-    direct_parts: directParts,
-    dot_parts: dotParts,
-  };
-  saveSettings();
-  if (state.currentView === 'combat') renderCombatView();
-  toast('Combat estimate updated', 'success');
-};
-
-window.resetCombatOverrideFromRow = function(btn) {
-  const key = btn?.dataset?.key;
-  if (!key || !state.combatOverrides) return;
-  delete state.combatOverrides[key];
-  saveSettings();
-  if (state.currentView === 'combat') renderCombatView();
-  toast('Combat estimate reset', 'info');
-};
 
 // API helpers
 async function api(path, method = 'GET', body = null) {
@@ -428,7 +314,6 @@ function switchView(view) {
   $('#view-settings').classList.toggle('hidden', view !== 'settings');
   $('#view-skills').classList.toggle('hidden', view !== 'skills');
   $('#view-recipes').classList.toggle('hidden', view !== 'recipes');
-  $('#view-combat').classList.toggle('hidden', view !== 'combat');
   $('#view-drop-rates').classList.toggle('hidden', view !== 'drop-rates');
 
   const titles = { 
@@ -443,7 +328,6 @@ function switchView(view) {
     warcache: 'Warcache Solver',
     skills: 'Skills Reference',
     recipes: 'Recipe Browser',
-    combat: 'Combat Log',
     'drop-rates': 'Drop Rates',
     settings: 'Settings'
   };
@@ -459,7 +343,6 @@ function switchView(view) {
   if (view === 'warcache') renderWarcacheView();
   if (view === 'skills') renderSkillsView();
   if (view === 'recipes') renderRecipesView();
-  if (view === 'combat') renderCombatView();
   if (view === 'drop-rates') { state.dropZone = undefined; state.dropSource = ''; renderDropRatesView(); }
   if (view === 'settings') renderSettingsView();
 }
@@ -818,7 +701,7 @@ function applyRoutePlanHighlight(results) {
 // Routes for one item via the existing ?item= endpoint (cached).
 async function fetchRoutesFor(it) {
   if (!(it.name in __routePlannerCache)) {
-    __routePlannerCache[it.name] = await api('/api/route-planner?item=' + encodeURIComponent(it.name)) || null;
+    __routePlannerCache[it.name] = await api('/api/route-planner?item=' + encodeURIComponent(it.name) + '&sort=distance') || null;
   }
   return Array.isArray(__routePlannerCache[it.name]?.routes) ? __routePlannerCache[it.name].routes : [];
 }
@@ -1274,15 +1157,6 @@ $('#recipes-level')?.addEventListener('input', () => {
 // Poll feed replacement (avoids per-tab EventSource connection limits)
 let __lastLootSig = '';
 let __pollInFlight = false;
-function isCombatOverrideEditing() {
-  const ae = document.activeElement;
-  if (!ae || !ae.classList) return false;
-  return ae.classList.contains('ov-direct') ||
-    ae.classList.contains('ov-direct-armor') ||
-    ae.classList.contains('ov-directparts') ||
-    ae.classList.contains('ov-dotparts');
-}
-
 async function pollUpdates() {
   if (__pollInFlight) return;
   __pollInFlight = true;
@@ -1312,11 +1186,6 @@ async function pollUpdates() {
       if (ph) state.priceHistory = ph;
     }
 
-    // Live combat tracking refresh in background while Combat view is open.
-    __combatPollTick++;
-    if (state.currentView === 'combat' && __combatPollTick % 2 === 0 && !isCombatOverrideEditing()) {
-      await renderCombatView();
-    }
   } catch (e) {
     // keep silent; api() already toasts for hard failures
   } finally {
@@ -1412,7 +1281,6 @@ function defaultDashLayout() {
     { type: 'value-chart', title: 'Value Trend', size: 'half', visible: true },
     { type: 'favor-chart', title: 'Favor Trend', size: 'half', visible: true },
     { type: 'reset-alerts', title: '⏳ Nearing Reset', size: 'half', visible: true },
-    { type: 'combat-stats', title: '⚔ Combat', size: 'half', visible: true },
   ];
 }
 function loadDashLayout() {
@@ -1537,27 +1405,6 @@ widgetRenderers['trader-alerts'] = function(w, sessions) {
   return html;
 };
 
-widgetRenderers['combat-stats'] = async function(w, sessions) {
-  const s = state.session;
-  if (!s || s.state !== 'running') return '<div class="dash-info-box"><span class="muted">Session must be running</span></div>';
-  try {
-    const data = await api('/api/combat');
-    if (!data || data.length === 0) return '<div class="dash-info-box"><span class="muted">No combat data yet</span></div>';
-    const totalDmg = data.reduce((a, b) => a + (b.est_damage || 0), 0);
-    const totalUses = data.reduce((a, b) => a + (b.uses || 0), 0);
-    const topAbils = [...data].sort((a, b) => (b.est_damage || 0) - (a.est_damage || 0)).slice(0, 5);
-    let html = `<div class="dashboard-stats" style="margin-bottom:8px">
-      <div class="stat-card"><div class="stat-label">Est. Damage</div><div class="stat-value">${totalDmg.toFixed(0)}</div></div>
-      <div class="stat-card"><div class="stat-label">Abilities</div><div class="stat-value">${totalUses}</div></div>
-    </div><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Top by damage</div>`;
-    for (const a of topAbils) {
-      html += `<div style="display:flex;justify-content:space-between;padding:3px 8px;font-size:12px;border-bottom:1px solid var(--border)">
-        <span>${escapeHtml(a.name)}</span><span style="color:var(--accent)">${(a.est_damage || 0).toFixed(0)} dmg</span></div>`;
-    }
-    return html;
-  } catch { return '<div class="dash-info-box"><span class="muted">Combat data unavailable</span></div>'; }
-};
-
 widgetRenderers['top-items'] = function(w, sessions) {
   const top = [...sessions].sort((a, b) => b.total_value - a.total_value).slice(0, 5);
   if (top.length === 0) return '<div class="dash-info-box"><span class="muted">No data yet</span></div>';
@@ -1671,114 +1518,6 @@ function renderBarChart(canvasId, sessions, extract, colorA, colorB) {
   }
 }
 
-function buildCombatTimelineSeries(sessionSnapshot, combatData) {
-  const s = sessionSnapshot || state.session;
-  const uses = Array.isArray(s?.ability_uses) ? s.ability_uses : [];
-  if (!s?.started_at || uses.length === 0) return null;
-
-  const byID = new Map();
-  const byName = new Map();
-  for (const a of (combatData || [])) {
-    if (a?.ability_id) byID.set(Number(a.ability_id), a);
-    const nk = String(a?.name || '').trim().toLowerCase();
-    if (nk) byName.set(nk, a);
-  }
-
-  const startMs = new Date(s.started_at).getTime();
-  const endMs = (s.state === 'running' || !s.ended_at) ? Date.now() : new Date(s.ended_at).getTime();
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
-
-  const durationSec = Math.max(1, Math.floor((endMs - startMs) / 1000));
-  const targetPoints = 48;
-  const bucketSec = Math.max(1, Math.ceil(durationSec / targetPoints));
-  const bucketCount = Math.max(2, Math.ceil(durationSec / bucketSec));
-
-  const byAbility = new Map();
-  const byAbilityTime = new Map();
-  const byDamageType = new Map();
-
-  const ensure = (m, k) => {
-    if (!m.has(k)) m.set(k, new Array(bucketCount).fill(0));
-    return m.get(k);
-  };
-
-  const resolveAbility = ev => {
-    const id = Number(ev?.ability_id || 0);
-    if (id > 0 && byID.has(id)) return byID.get(id);
-    const name = String(ev?.name || '').trim().toLowerCase();
-    if (name && byName.has(name)) return byName.get(name);
-    return { ability_id: id || 0, name: String(ev?.name || ''), skill: 'Unknown' };
-  };
-
-  const addEventDamageToSeries = (arr, dtSec, model) => {
-    const castIdx = Math.floor(dtSec / bucketSec);
-    for (const dp of (model.directParts || [])) {
-      if (castIdx >= 0 && castIdx < bucketCount) arr[castIdx] += Number(dp.damage || 0);
-    }
-    for (const dot of (model.dotParts || [])) {
-      const dotPerSec = Number(dot.damage || 0) / Number(dot.seconds || 1);
-      const dotEnd = dtSec + Number(dot.seconds || 0);
-      const startB = Math.max(0, Math.floor(dtSec / bucketSec));
-      const endB = Math.min(bucketCount - 1, Math.floor(dotEnd / bucketSec));
-      for (let b = startB; b <= endB; b++) {
-        const bStart = b * bucketSec;
-        const bEnd = bStart + bucketSec;
-        const overlap = Math.max(0, Math.min(dotEnd, bEnd) - Math.max(dtSec, bStart));
-        if (overlap > 0) arr[b] += dotPerSec * overlap;
-      }
-    }
-  };
-
-  for (const ev of uses) {
-    const t = new Date(ev?.time).getTime();
-    if (!Number.isFinite(t)) continue;
-    const dtSec = Math.floor((t - startMs) / 1000);
-    if (dtSec < 0) continue;
-
-    const a = resolveAbility(ev);
-    const model = getAbilityDamageModel(a);
-    const abilityName = String(a?.name || ev?.name || `Ability ${a?.ability_id || ''}`).trim() || 'Unknown';
-
-    addEventDamageToSeries(ensure(byAbility, abilityName), dtSec, model);
-    addEventDamageToSeries(ensure(byAbilityTime, abilityName), dtSec, model);
-
-    // Damage type series (acknowledges custom direct/dot parts + armor/health target).
-    const castIdx = Math.floor(dtSec / bucketSec);
-    for (const dp of (model.directParts || [])) {
-      const t = String(dp?.element || a?.damage_type || 'Unknown').trim() || 'Unknown';
-      const target = normalizeTargetKind(dp?.target || 'health');
-      const key = `${t} (${target})`;
-      if (castIdx >= 0 && castIdx < bucketCount) ensure(byDamageType, key)[castIdx] += Number(dp.damage || 0);
-    }
-    for (const dot of (model.dotParts || [])) {
-      const t = String(dot?.element || 'Unknown').trim() || 'Unknown';
-      const target = normalizeTargetKind(dot?.target || 'health');
-      const key = `${t} (${target})`;
-      const arr = ensure(byDamageType, key);
-      const dotPerSec = Number(dot.damage || 0) / Number(dot.seconds || 1);
-      const dotEnd = dtSec + Number(dot.seconds || 0);
-      const startB = Math.max(0, Math.floor(dtSec / bucketSec));
-      const endB = Math.min(bucketCount - 1, Math.floor(dotEnd / bucketSec));
-      for (let b = startB; b <= endB; b++) {
-        const bStart = b * bucketSec;
-        const bEnd = bStart + bucketSec;
-        const overlap = Math.max(0, Math.min(dotEnd, bEnd) - Math.max(dtSec, bStart));
-        if (overlap > 0) arr[b] += dotPerSec * overlap;
-      }
-    }
-  }
-
-  const toSeries = m => [...m.entries()].map(([name, values]) => ({ name, values }));
-  return {
-    durationSec,
-    bucketSec,
-    bucketCount,
-    abilitySeries: toSeries(byAbility),
-    abilityTimeSeries: toSeries(byAbilityTime),
-    damageTypeSeries: toSeries(byDamageType),
-  };
-}
-
 function renderMultiLineDamageChart(canvasId, series, durationSec, options = {}) {
   const canvas = $(canvasId);
   if (!canvas) return;
@@ -1861,52 +1600,6 @@ function renderMultiLineDamageChart(canvasId, series, durationSec, options = {})
   }
 }
 
-function renderCombatAbilityAccumChart(canvasId, legendId, sessionSnapshot, combatData) {
-  const built = buildCombatTimelineSeries(sessionSnapshot, combatData);
-  if (!built) {
-    renderMultiLineDamageChart(canvasId, [], 0, { legendId });
-    return;
-  }
-  const top = [...built.abilitySeries]
-    .map(s => ({ ...s, score: s.values[s.values.length - 1] || 0 }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 10)
-    .map(s => {
-      let acc = 0;
-      const vals = s.values.map(v => (acc += v));
-      return { name: s.name, values: vals };
-    });
-  renderMultiLineDamageChart(canvasId, top, built.durationSec, { legendId });
-}
-
-function renderCombatSkillTimeChart(canvasId, legendId, sessionSnapshot, combatData) {
-  const built = buildCombatTimelineSeries(sessionSnapshot, combatData);
-  if (!built) {
-    renderMultiLineDamageChart(canvasId, [], 0, { legendId });
-    return;
-  }
-  const top = [...built.abilityTimeSeries]
-    .map(s => ({ ...s, score: s.values.reduce((a, b) => a + b, 0) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 10)
-    .map(s => ({ name: s.name, values: s.values }));
-  renderMultiLineDamageChart(canvasId, top, built.durationSec, { legendId });
-}
-
-function renderCombatDamageTypeTimeChart(canvasId, legendId, sessionSnapshot, combatData) {
-  const built = buildCombatTimelineSeries(sessionSnapshot, combatData);
-  if (!built) {
-    renderMultiLineDamageChart(canvasId, [], 0, { legendId });
-    return;
-  }
-  const top = [...(built.damageTypeSeries || [])]
-    .map(s => ({ ...s, score: s.values.reduce((a, b) => a + b, 0) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 10)
-    .map(s => ({ name: s.name, values: s.values }));
-  renderMultiLineDamageChart(canvasId, top, built.durationSec, { legendId });
-}
-
 // Widget settings
 window.toggleDashSettings = function() {
   const panel = $('#dash-settings');
@@ -1985,233 +1678,6 @@ setInterval(() => {
     elapsedEl.textContent = ' · ' + fmtElapsed(Date.now() - new Date(state.session.started_at).getTime());
   }
 }, 1000);
-
-// Combat view — ability usage + estimated DPS
-async function renderCombatView() {
-  const container = $('#combat-list');
-  if (!container) return;
-  const s = state.session;
-  if (!s || !s.ability_uses || s.ability_uses.length === 0) {
-    container.innerHTML = '<div class="summary-empty">Start a session and use abilities to see combat data here.</div>';
-    $('#combat-count').textContent = 'No combat data';
-    return;
-  }
-  const data = await api('/api/combat');
-  if (!data) { container.innerHTML = '<div class="summary-empty">Combat endpoint unavailable.</div>'; return; }
-  state.combatData = data;
-  $('#combat-count').textContent = `${data.length} ability type${data.length !== 1 ? 's' : ''}`;
-
-  const enriched = data.map(a => {
-    const model = getAbilityDamageModel(a);
-    const uses = Number(a.uses || 0);
-    const estDamagePerCast = model.castTotal;
-    const estHealthPerCast = model.castHealth;
-    const estArmorPerCast = model.castArmor;
-    const estDamageAdjusted = uses * estDamagePerCast;
-    return {
-      ...a,
-      __model: model,
-      __estDamagePerCast: estDamagePerCast,
-      __estHealthPerCast: estHealthPerCast,
-      __estArmorPerCast: estArmorPerCast,
-      __estDamageAdjusted: estDamageAdjusted,
-    };
-  });
-
-  // Combat stat cards
-  const totalDmg = enriched.reduce((s, a) => s + (a.__estDamageAdjusted || 0), 0);
-  const totalUses = enriched.reduce((s, a) => s + (a.uses || 0), 0);
-  const totalEvades = enriched.reduce((s, a) => s + (a.evades || 0), 0);
-  const statsEl = $('#combat-stats');
-  if (statsEl) {
-    statsEl.innerHTML = `
-      <div style="flex:1;min-width:140px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Abilities Used</div>
-        <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:2px">${totalUses}</div>
-      </div>
-      <div style="flex:1;min-width:140px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Evaded</div>
-        <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:2px">${totalEvades}</div>
-      </div>
-      <div style="flex:1;min-width:140px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center">
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Estimated Damage</div>
-        <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:2px">${totalDmg.toFixed(0)}</div>
-      </div>
-      <div style="flex-basis:100%;margin-top:8px;padding:8px 10px;border:1px solid var(--sell-vendor);background:color-mix(in srgb, var(--sell-vendor) 12%, transparent);color:var(--text);border-radius:6px;font-size:12px;font-weight:600;line-height:1.35">
-        ⚠ Estimated values only (no VIP combat log direct damage feed).
-      </div>`;
-  }
-
-  // Charts + per-ability table
-  let html = '<div style="margin-bottom:10px;padding:10px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px">' +
-    '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Accumulated damage by attack (line per ability)</div>' +
-    '<canvas id="combat-accum-attack-chart" height="240" style="width:100%;border-radius:6px;background:var(--row)"></canvas>' +
-    '<div id="combat-accum-attack-legend" style="margin-top:6px;font-size:11px;color:var(--muted);line-height:1.4"></div>' +
-    '</div>' +
-    '<div style="margin-bottom:10px;padding:10px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px">' +
-    '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Damage over time by attack (line per ability)</div>' +
-    '<canvas id="combat-skill-time-chart" height="240" style="width:100%;border-radius:6px;background:var(--row)"></canvas>' +
-    '<div id="combat-skill-time-legend" style="margin-top:6px;font-size:11px;color:var(--muted);line-height:1.4"></div>' +
-    '</div>' +
-    '<div style="margin-bottom:10px;padding:10px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px">' +
-    '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Damage over time by damage type (custom DoTs included)</div>' +
-    '<canvas id="combat-dmgtype-time-chart" height="220" style="width:100%;border-radius:6px;background:var(--row)"></canvas>' +
-    '<div id="combat-dmgtype-time-legend" style="margin-top:6px;font-size:11px;color:var(--muted);line-height:1.4"></div>' +
-    '</div>' +
-    '<table style="width:100%;border-collapse:collapse"><thead><tr>' +
-    '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">Ability</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Uses</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Base DMG</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Estimated DMG/Cast</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">HP/Cast</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Armor/Cast</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Manual HP DMG</th>' +
-    '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Manual Armor DMG</th>' +
-    '<th style="padding:6px 8px;border-bottom:1px solid var(--border)">Manual Direct Parts</th>' +
-    '<th style="padding:6px 8px;border-bottom:1px solid var(--border)">Manual DoTs (total/seconds)</th>' +
-    '<th style="padding:6px 8px;border-bottom:1px solid var(--border)">Type</th>' +
-    '<th style="padding:6px 8px;border-bottom:1px solid var(--border)">Override</th>' +
-    '</tr></thead><tbody>';
-  for (const a of enriched) {
-    const key = combatAbilityKey(a);
-    const model = a.__model;
-    html += `<tr>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${escapeHtml(a.name || (a.ability_id ? `Ability ${a.ability_id}` : 'Unknown'))}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${a.uses}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${a.base_damage ? a.base_damage.toFixed(0) : '-'}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estDamagePerCast) ? a.__estDamagePerCast.toFixed(0) : '-'}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estHealthPerCast) ? a.__estHealthPerCast.toFixed(0) : '-'}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estArmorPerCast) ? a.__estArmorPerCast.toFixed(0) : '-'}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right"><input class="ov-direct" type="number" min="0" step="1" value="${(model.directParts.filter(p => p.target === 'health').reduce((s, p) => s + Number(p.damage || 0), 0)).toFixed(0)}" style="width:74px;background:var(--row);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px"></td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right"><input class="ov-direct-armor" type="number" min="0" step="1" value="${(model.directParts.filter(p => p.target === 'armor').reduce((s, p) => s + Number(p.damage || 0), 0)).toFixed(0)}" style="width:82px;background:var(--row);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px"></td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row)"><input class="ov-directparts" type="text" value="${escapeHtml(model.directPartsSpec || '')}" placeholder="Poison:381, Fire:40@armor" title="Format: Element:Damage[@health|@armor], comma-separated" style="width:240px;max-width:100%;background:var(--row);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px"></td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row)"><input class="ov-dotparts" type="text" value="${escapeHtml(model.dotPartsSpec || '')}" placeholder="Poison:381/10, Fire:80/10@armor" title="Damage is TOTAL over duration. Format: Element:Damage/Seconds[@health|@armor]" style="width:260px;max-width:100%;background:var(--row);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px"></td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${a.skill || a.damage_type ? escapeHtml(a.skill || '') + (a.damage_type ? ' · ' + escapeHtml(a.damage_type) : '') : ''}</td>
-      <td style="padding:4px 8px;border-bottom:1px solid var(--row);white-space:nowrap">
-        <button class="btn ghost" data-key="${escapeHtml(key)}" onclick="saveCombatOverrideFromRow(this)">Save</button>
-        <button class="btn ghost" data-key="${escapeHtml(key)}" onclick="resetCombatOverrideFromRow(this)">Reset</button>
-      </td>
-    </tr>`;
-  }
-  html += '</tbody></table>';
-
-  // Raw debug data (to validate DPS/base damage mapping)
-  const rawUses = Array.isArray(s?.ability_uses) ? s.ability_uses : [];
-  const rawHits = Array.isArray(s?.combat_hits) ? s.combat_hits : [];
-  const rawEvades = Array.isArray(s?.combat_evades) ? s.combat_evades : [];
-
-  const combatRows = [...enriched]
-    .sort((a, b) => (b.__estDamageAdjusted || 0) - (a.__estDamageAdjusted || 0))
-    .slice(0, 60)
-    .map(a => `<tr>
-      <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(a.name || '')}</td>
-      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${a.ability_id || '-'}</td>
-      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${a.uses || 0}</td>
-      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${a.hits || 0}</td>
-      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${a.base_damage ? Number(a.base_damage).toFixed(2) : '-'}</td>
-      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estDamagePerCast) ? Number(a.__estDamagePerCast).toFixed(2) : '-'}</td>
-      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estHealthPerCast) ? Number(a.__estHealthPerCast).toFixed(2) : '-'}</td>
-      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${Number.isFinite(a.__estArmorPerCast) ? Number(a.__estArmorPerCast).toFixed(2) : '-'}</td>
-      <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${a.evades || 0}</td>
-      <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(a.skill || '')}</td>
-      <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(a.damage_type || '')}</td>
-    </tr>`)
-    .join('');
-
-  const latestUses = rawUses.slice(-120).reverse().map(ev => `<tr>
-    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(relTime(ev.time) || '')}</td>
-    <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${ev.ability_id || '-'}</td>
-    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(ev.name || '')}</td>
-  </tr>`).join('');
-
-  const latestHits = rawHits.slice(-120).reverse().map(ev => `<tr>
-    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(relTime(ev.time) || '')}</td>
-    <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${ev.ability_id || '-'}</td>
-    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(ev.ability || '')}</td>
-  </tr>`).join('');
-
-  const latestEvades = rawEvades.slice(-120).reverse().map(ev => `<tr>
-    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(relTime(ev.time) || '')}</td>
-    <td style="padding:3px 6px;border-bottom:1px solid var(--row);text-align:right">${ev.ability_id || '-'}</td>
-    <td style="padding:3px 6px;border-bottom:1px solid var(--row)">${escapeHtml(ev.ability || '')}</td>
-  </tr>`).join('');
-
-  html += `
-    <details style="margin-top:12px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:8px">
-      <summary style="cursor:pointer;font-weight:600">Raw combat data (debug)</summary>
-      <div style="font-size:12px;color:var(--muted);margin:6px 0 10px 0">
-        Uses events: <b>${rawUses.length}</b> · Hit events: <b>${rawHits.length}</b> · Evaded events: <b>${rawEvades.length}</b> · Ability aggregates: <b>${data.length}</b>
-      </div>
-
-      <div style="overflow:auto;max-height:260px;border:1px solid var(--border);border-radius:6px;margin-bottom:10px">
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead><tr>
-            <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Ability</th>
-            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">ID</th>
-            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Uses</th>
-            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Hits (ignored)</th>
-            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Base DMG</th>
-            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Estimated DMG/Cast</th>
-            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">HP/Cast</th>
-            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Armor/Cast</th>
-            <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">Evades</th>
-            <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Skill</th>
-            <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Type</th>
-          </tr></thead>
-          <tbody>${combatRows || '<tr><td colspan="11" style="padding:8px;color:var(--muted)">No aggregate data</td></tr>'}</tbody>
-        </table>
-      </div>
-
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-        <div style="min-width:0">
-          <div style="font-size:12px;color:var(--muted);margin:0 0 6px 0">Latest ability uses (raw)</div>
-          <div style="overflow:auto;max-height:220px;border:1px solid var(--border);border-radius:6px">
-            <table style="width:100%;border-collapse:collapse;font-size:12px">
-              <thead><tr>
-                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Time</th>
-                <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">ID</th>
-                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Ability</th>
-              </tr></thead>
-              <tbody>${latestUses || '<tr><td colspan="3" style="padding:8px;color:var(--muted)">No use events</td></tr>'}</tbody>
-            </table>
-          </div>
-        </div>
-
-        <div style="min-width:0">
-          <div style="font-size:12px;color:var(--muted);margin:0 0 6px 0">Latest hit events (raw)</div>
-          <div style="overflow:auto;max-height:220px;border:1px solid var(--border);border-radius:6px">
-            <table style="width:100%;border-collapse:collapse;font-size:12px">
-              <thead><tr>
-                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Time</th>
-                <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">ID</th>
-                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Ability</th>
-              </tr></thead>
-              <tbody>${latestHits || '<tr><td colspan="3" style="padding:8px;color:var(--muted)">No hit events</td></tr>'}</tbody>
-            </table>
-          </div>
-        </div>
-
-        <div style="min-width:0">
-          <div style="font-size:12px;color:var(--muted);margin:0 0 6px 0">Latest evaded events (raw)</div>
-          <div style="overflow:auto;max-height:220px;border:1px solid var(--border);border-radius:6px">
-            <table style="width:100%;border-collapse:collapse;font-size:12px">
-              <thead><tr>
-                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Time</th>
-                <th style="text-align:right;padding:5px 6px;border-bottom:1px solid var(--border)">ID</th>
-                <th style="text-align:left;padding:5px 6px;border-bottom:1px solid var(--border)">Ability</th>
-              </tr></thead>
-              <tbody>${latestEvades || '<tr><td colspan="3" style="padding:8px;color:var(--muted)">No evaded events</td></tr>'}</tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </details>`;
-
-  container.innerHTML = html;
-  renderCombatAbilityAccumChart('#combat-accum-attack-chart', '#combat-accum-attack-legend', s, enriched);
-  renderCombatSkillTimeChart('#combat-skill-time-chart', '#combat-skill-time-legend', s, enriched);
-  renderCombatDamageTypeTimeChart('#combat-dmgtype-time-chart', '#combat-dmgtype-time-legend', s, enriched);
-}
 
 // Zones view — show zone history from session snapshot
 // Drop Rates view — aggregated across sessions
