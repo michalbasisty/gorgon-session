@@ -30,7 +30,8 @@ const state = {
   zoneNpcs: [],
   dropRates: null,
   dropZone: undefined, // active zone filter ('' = all zones); undefined = not chosen yet
-  dropSource: '' // active enemy drill-down ('' = none)
+  dropSource: '', // active enemy drill-down ('' = none)
+  sessionTemplates: [] // from GET /api/config → session_templates
 };
 
 // Shared request state (must be initialized before any startup API calls)
@@ -252,7 +253,10 @@ async function api(path, method = 'GET', body = null) {
         toast(`${path}: ${await r.text()}`, 'error');
         return null;
       }
-      return await r.json();
+      // ponytail: tolerate empty 2xx bodies (e.g. stale server, proxy, 204s)
+      // instead of crashing on r.json(). Callers get null, same as an error.
+      const text = await r.text();
+      return text ? JSON.parse(text) : null;
     } catch (e) {
       if (e && e.name === 'AbortError') {
         console.warn('API timeout', path);
@@ -386,6 +390,7 @@ function renderSession(s) {
     if (lootSig !== __trackerLootSig && !document.querySelector('.loot-note-input')) {
       __trackerLootSig = lootSig;
       renderLootTable(s);
+      renderSellChecklist();
       // Reuse the tracker refresh cycle: keep the current-session plan in sync.
       if (($('#route-session-select')?.value || '') === '') renderRoutePlan(s);
     }
@@ -556,10 +561,12 @@ function renderLootTable(s) {
 function addRow(e) {
   const tr = document.createElement('tr');
   tr.dataset.name = e.name;
+  const isMat = isTrackedMaterial(e.name, getTrackedIngredients());
+  if (isMat) tr.classList.add('loot-material');
   const iconHtml = e.icon_url ? `<img src="${e.icon_url}" alt="" class="item-icon" onerror="this.style.display='none'">` : '';
   tr.innerHTML = `
     <td class="time">${relTime(e.last_seen)}</td>
-    <td>${iconHtml}${escapeHtml(e.name)}</td>
+    <td>${iconHtml}${escapeHtml(e.name)}${isMat ? ' <span class="material-badge">mat</span>' : ''}</td>
     <td class="count">${e.count}</td>
     <td><span class="verdict ${e.decision.verdict}">${e.decision.verdict.replace(/_/g, ' ')}</span></td>
     <td class="route"><a href="#" class="route-link" title="Plan a sell route for this item" onclick="event.preventDefault();planRoute('${escapeHtml(e.name).replace(/'/g, "\\'")}')">${routeText(e.decision)}</a></td>
@@ -639,8 +646,6 @@ async function loadRoutePlan() {
   renderRoutePlan();
 }
 
-let __traderDetailCache = {};       // trader → detail (planner data changes rarely, cache per page load)
-let __traderApiUnavailable = false; // set once when ?trader= isn't served → item-centric view
 let __routePlanRenderToken = 0;     // guards against stale async renders racing newer ones
 
 async function renderRoutePlan(preloaded) {
@@ -672,20 +677,41 @@ async function renderRoutePlan(preloaded) {
   const favor = items.filter(i => i.decision.verdict === 'favor');
   const sell = items.filter(i => i.decision.verdict === 'sell_vendor' || i.decision.verdict === 'sell_consignment');
   const keep = items.filter(i => i.decision.verdict !== 'favor' && i.decision.verdict !== 'sell_vendor' && i.decision.verdict !== 'sell_consignment');
+  const keepHtml = keep.length ? '<h4 class="route-plan-block-title keep">📦 Keep</h4>' + keep.map(planKeepRow).join('') : '';
 
-  // Trader-centric view when the ?trader= endpoint is served; item-centric fallback otherwise.
-  if (await renderTraderPlan(results, items, favor, sell, keep, token)) return;
-  if (token !== __routePlanRenderToken) return;
+  // One list at a time: tabs switch between the sell and favor blocks; keep is
+  // informational (no routes) and stays visible under whichever mode is active.
+  const mode = __routePlanMode === 'favor' ? 'favor' : 'sell';
+  let listHtml;
+  if (mode === 'favor') {
+    listHtml = '<h4 class="route-plan-block-title favor">🎁 Give as favor</h4>' +
+      (favor.length ? buildFavorRouteHtml(favor) : '<div class="route-plan-empty">no favor items</div>');
+  } else {
+    const withRoutes = await Promise.all(sell.slice(0, 10).map(async it => ({ it, routes: await fetchRoutesFor(it) })));
+    listHtml = '<h4 class="route-plan-block-title sell">💰 Sell route</h4>' +
+      (sell.length ? buildSellRouteHtml(withRoutes) : '<div class="route-plan-empty">no sell items</div>');
+  }
 
-  let html = '';
-  if (favor.length) html += '<h4 class="route-plan-block-title favor">🎁 Give as favor</h4>' + favor.map(planFavorRow).join('');
-  if (sell.length) html += '<h4 class="route-plan-block-title sell">💰 Sell</h4>' + sell.map(planSellRow).join('');
-  if (keep.length) html += '<h4 class="route-plan-block-title keep">📦 Keep</h4>' + keep.map(planKeepRow).join('');
-  results.innerHTML = html;
+  results.innerHTML = `<div class="route-plan-tabs">
+      <button class="route-plan-tab${mode === 'sell' ? ' active' : ''}" data-mode="sell">💰 Sell</button>
+      <button class="route-plan-tab${mode === 'favor' ? ' active' : ''}" data-mode="favor">🎁 Favor</button>
+    </div>
+    <div class="route-plan-list">${listHtml}${keepHtml}</div>`;
   applyRoutePlanHighlight(results);
 
-  // Trader suggestions for sell items, batched (max 10; the rest render without routes).
-  await Promise.all(sell.slice(0, 10).map(it => planRoutesFor(it)));
+  results.querySelectorAll('.route-plan-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      __routePlanMode = btn.dataset.mode;
+      renderRoutePlan(); // full re-render so only the active mode's list is built
+    });
+  });
+
+  // Per-row ⇄ pickers for the ACTIVE mode only (sell needs fetch, favor doesn't).
+  if (mode === 'favor') {
+    await Promise.all(favor.map(it => planFavorRoutesFor(it)));
+  } else {
+    await Promise.all(sell.slice(0, 10).map(it => planRoutesFor(it)));
+  }
 }
 
 function applyRoutePlanHighlight(results) {
@@ -706,136 +732,10 @@ async function fetchRoutesFor(it) {
   return Array.isArray(__routePlannerCache[it.name]?.routes) ? __routePlannerCache[it.name].routes : [];
 }
 
-// Raw fetch (no error toast) so a missing ?trader= endpoint fails silently → fallback view.
-async function fetchTraderDetail(name) {
-  if (name in __traderDetailCache) return __traderDetailCache[name];
-  let d = null;
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 10000);
-    const r = await fetch('/api/route-planner?trader=' + encodeURIComponent(name), { signal: ctrl.signal });
-    clearTimeout(t);
-    if (r.ok) d = await r.json();
-  } catch (e) { /* missing endpoint or timeout → null */ }
-  __traderDetailCache[name] = d;
-  return d;
-}
-
-// Trader-centric route plan: traders sorted by distance, each with sell/favor sections.
-// Returns true when it rendered; false tells renderRoutePlan to use the item-centric view.
-async function renderTraderPlan(results, items, favor, sell, keep, token) {
-  if (__traderApiUnavailable) return false;
-
-  // Discover candidate traders from the current loot: sell items via the existing
-  // item endpoint, favor items from their per-NPC targets.
-  const sellByTrader = new Map();
-  const sellRoutes = await Promise.all(sell.map(it => fetchRoutesFor(it)));
-  if (token !== __routePlanRenderToken) return true; // stale render, stop here
-  for (let i = 0; i < sell.length; i++) {
-    for (const r of sellRoutes[i]) {
-      const t = String(r?.trader || '').trim();
-      if (!t) continue;
-      const arr = sellByTrader.get(t) || [];
-      arr.push({ name: sell[i].name, count: sell[i].count, value: sell[i].value || 0 });
-      sellByTrader.set(t, arr);
-    }
-  }
-  const favorByTrader = new Map();
-  for (const it of favor) {
-    for (const tgt of (it.decision.favor_targets || [])) {
-      const t = String(tgt.npc || '').trim();
-      if (!t) continue;
-      const arr = favorByTrader.get(t) || [];
-      arr.push({ name: it.name, count: it.count, score: Number(tgt.score) || 0 });
-      favorByTrader.set(t, arr);
-    }
-  }
-  const traderNames = [...new Set([...sellByTrader.keys(), ...favorByTrader.keys()])];
-  if (!traderNames.length) return false;
-
-  if (token === __routePlanRenderToken) results.innerHTML = '<div class="route-plan-loading">⟳ checking trader details…</div>';
-
-  const details = await Promise.all(traderNames.map(async n => ({ name: n, detail: await fetchTraderDetail(n) })));
-  if (!details.some(x => x.detail)) {
-    __traderApiUnavailable = true; // ?trader= not served; item-centric view from now on
-    return false;
-  }
-  if (token !== __routePlanRenderToken) return true;
-
-  // Merge endpoint data with locally-derived lists, keeping only items actually in this session.
-  const have = new Set(items.map(i => i.name));
-  const cards = details.map(({ name, detail }) => {
-    let sellList = sellByTrader.get(name) || [];
-    let favorList = favorByTrader.get(name) || [];
-    let distance = null;
-    let area = '';
-    if (detail) {
-      // null/undefined distance_km must stay null — Number(null) === 0 would
-      // show a misleading "0.0 km" badge when the CDN has no coordinates.
-      distance = detail.distance_km == null ? null : Number(detail.distance_km);
-      area = String(detail.area || '');
-      const ds = (detail.sell_items || []).filter(s => have.has(s.name));
-      if (ds.length) sellList = ds.map(s => ({ name: s.name, count: Number(s.count) || 1, value: Number(s.value) || 0 }));
-      const df = (detail.favor_items || []).filter(f => have.has(f.name));
-      if (df.length) favorList = df.map(f => ({ name: f.name, count: Number(f.count) || 1, score: Number(f.favor_score) || 0 }));
-    }
-    return { name, distance: Number.isFinite(distance) ? distance : null, area, sellList, favorList };
-  }).filter(c => c.sellList.length || c.favorList.length);
-  if (!cards.length) return false;
-
-  // Nearest first; traders without distance fall back to alphabetical order.
-  cards.sort((a, b) => {
-    const ad = a.distance != null, bd = b.distance != null;
-    if (ad !== bd) return ad ? -1 : 1;
-    if (ad) return a.distance - b.distance;
-    return a.name.localeCompare(b.name);
-  });
-
-  let html = '';
-  cards.forEach((c, i) => {
-    const open = i < 5; // many traders → first few open, rest collapsible
-    const dist = c.distance != null
-      ? ` <span class="route-trader-distance">(${c.distance.toFixed(1)} km)</span>` : '';
-    const sellTotal = c.sellList.reduce((sum, it) => sum + (it.value || 0) * (it.count || 1), 0);
-    const favorTotal = c.favorList.reduce((sum, it) => sum + (it.score || 0), 0);
-    const sellHtml = c.sellList.length
-      ? `<div class="route-section-title sell">💰 Sell (${c.sellList.length} item${c.sellList.length > 1 ? 's' : ''}, ${Math.round(sellTotal)}g)</div>`
-        + c.sellList.map(routePlanCardItem).join('')
-      : '';
-    const favorHtml = c.favorList.length
-      ? `<div class="route-section-title favor">❤️ Favor (${c.favorList.length} item${c.favorList.length > 1 ? 's' : ''}, +${favorTotal.toFixed(1)} score)</div>`
-        + c.favorList.map(routePlanCardItem).join('')
-      : '';
-    html += `<details class="route-trader-card"${open ? ' open' : ''}>
-      <summary class="route-trader-head">📍 ${escapeHtml(c.name)}${dist}</summary>
-      ${c.area ? `<div class="route-trader-area">${escapeHtml(c.area)}</div>` : ''}
-      ${sellHtml}${favorHtml}
-    </details>`;
-  });
-  if (keep.length) html += '<h4 class="route-plan-block-title keep">📦 Keep</h4>' + keep.map(planKeepRow).join('');
-  results.innerHTML = html;
-  applyRoutePlanHighlight(results);
-  return true;
-}
-
-function routePlanCardItem(it) {
-  return `<div class="route-plan-item" data-name="${escapeHtml(it.name)}">
-    <span class="route-plan-item-name">${escapeHtml(it.name)}</span>
-    <span class="route-plan-count">x${it.count}</span>
-  </div>`;
-}
-
 function planFavorRow(it) {
-  const targets = [...(it.decision.favor_targets || [])].sort((a, b) => (b.score || 0) - (a.score || 0));
-  const shown = targets.slice(0, 3);
-  const more = targets.length - shown.length;
-  const detail = targets.length
-    ? shown.map(t => `<span class="route-plan-target">${escapeHtml(t.npc)} <span class="route-plan-area">${escapeHtml(t.area || '')}</span> +${t.score ?? 0}</span>`).join('') +
-      (more > 0 ? `<span class="route-plan-more">+${more} more</span>` : '')
-    : '<span class="route-plan-muted">no favor targets</span>';
   return `<div class="route-plan-item" data-name="${escapeHtml(it.name)}">
     <span class="route-plan-item-name">${escapeHtml(it.name)} <span class="route-plan-count">x${it.count}</span></span>
-    <span class="route-plan-item-detail">${detail}</span>
+    <span class="route-plan-item-detail"><span class="route-plan-favor-routes"></span></span>
   </div>`;
 }
 
@@ -856,20 +756,222 @@ function planKeepRow(it) {
   </div>`;
 }
 
+// Per-item chosen trader: item name → trader name (user switches via the ⇄ button).
+let __routeTraderPick = {};
+// Per-item chosen favor target: item name → NPC name (user switches via the ⇄ button).
+let __routeFavorPick = {};
+// Active Route Plan mode: 'sell' or 'favor' (toggled via the tabs).
+let __routePlanMode = 'sell';
+
+// Shared link/meta helpers for trader names and route stats.
+function traderLinkHtml(name) {
+  const n = String(name || '').trim();
+  return n
+    ? `<a href="#" class="route-plan-link" onclick="event.preventDefault();showTraderHistory('${escapeHtml(n).replace(/'/g, "\\'")}')">${escapeHtml(n)}</a>`
+    : '<span class="route-plan-muted">?</span>';
+}
+const distHtml = r => r.distance_km == null ? '' : ` · ${Number(r.distance_km).toFixed(1)} km`;
+const refreshHtml = r => r.refresh_in_hours ? ` · ${Number(r.refresh_in_hours).toFixed(1)}h` : '';
+
+// Sell items grouped by their effective trader (user pick or nearest); trader groups nested
+// under map sections (one per area, ordered by nearest map first, unknown-area last).
+function buildSellRouteHtml(entries) {
+  const groups = new Map();
+  const noRoute = [];
+  for (const { it, routes } of entries) {
+    if (!routes.length) { noRoute.push(it); continue; }
+    const pick = __routeTraderPick[it.name] || routes[0].trader;
+    const r = routes.find(x => x.trader === pick) || routes[0];
+    let g = groups.get(r.trader);
+    if (!g) {
+      g = { trader: r.trader, area: r.area || '', distance: r.distance_km ?? null, refresh: r.refresh_in_hours ?? null, capacity: r.remaining_capacity_g ?? 0, items: [] };
+      groups.set(r.trader, g);
+    }
+    g.items.push(it);
+  }
+  const ordered = [...groups.values()].sort((a, b) => {
+    const ad = a.distance != null, bd = b.distance != null;
+    if (ad !== bd) return ad ? -1 : 1;
+    if (ad) return a.distance - b.distance;
+    return String(a.trader).localeCompare(String(b.trader));
+  });
+  // Bucket trader groups by map; each map renders one section holding its trader groups.
+  const mapName = g => String(g.area || '').trim() || 'unknown area';
+  const maps = new Map();
+  for (const g of ordered) {
+    const name = mapName(g);
+    if (!maps.has(name)) maps.set(name, []);
+    maps.get(name).push(g);
+  }
+  const groupHtml = g => {
+    const dist = g.distance == null ? '' : ` · ${Number(g.distance).toFixed(1)} km`;
+    const refresh = g.refresh ? ` · ${Number(g.refresh).toFixed(1)}h` : '';
+    const cap = g.capacity > 0 ? ` · ${Math.round(g.capacity).toLocaleString()} g` : '';
+    return `<div class="route-plan-group">
+    <div class="route-plan-group-header">
+      <span class="route-plan-trader">${traderLinkHtml(g.trader)}${dist}${refresh}${cap}</span>
+    </div>
+    <div class="route-plan-group-items">${g.items.map(planSellRow).join('')}</div>
+  </div>`;
+  };
+  const mapHtml = ([name, gs]) => `<div class="route-plan-map">
+    <div class="route-plan-map-header">📍 ${escapeHtml(name)}</div>
+    ${gs.map(groupHtml).join('')}
+  </div>`;
+  const mapDistance = gs => {
+    const ds = gs.filter(g => g.distance != null).map(g => g.distance);
+    return ds.length ? Math.min(...ds) : null;
+  };
+  const orderedMaps = [...maps.entries()].sort((a, b) => {
+    const ad = mapDistance(a[1]), bd = mapDistance(b[1]);
+    if ((ad == null) !== (bd == null)) return ad == null ? 1 : -1;
+    if (ad != null) return ad - bd;
+    return String(a[0]).localeCompare(String(b[0]));
+  });
+  const noRouteHtml = noRoute.length
+    ? `<div class="route-plan-group">
+    <div class="route-plan-group-header">
+      <span class="route-plan-muted">no traders found</span>
+    </div>
+    <div class="route-plan-group-items">${noRoute.map(planSellRow).join('')}</div>
+  </div>`
+    : '';
+  return orderedMaps.map(mapHtml).join('') + noRouteHtml;
+}
+
 async function planRoutesFor(it) {
   const routes = await fetchRoutesFor(it);
   if (!routes.length) return;
-  const container = [...document.querySelectorAll('.route-plan-item')]
-    .find(r => r.dataset.name === it.name)?.querySelector('.route-plan-routes');
+  const row = [...document.querySelectorAll('.route-plan-item')]
+    .find(r => r.dataset.name === it.name);
+  const container = row?.querySelector('.route-plan-routes');
   if (!container) return;
-  container.innerHTML = routes.slice(0, 3).map(r => {
-    const trader = String(r.trader || '').trim();
-    const link = trader
-      ? `<a href="#" class="route-plan-link" onclick="event.preventDefault();showTraderHistory('${escapeHtml(trader).replace(/'/g, "\\'")}')">${escapeHtml(trader)}</a>`
-      : '<span class="route-plan-muted">?</span>';
-    return `<span class="route-plan-trader">${link} <span class="route-plan-area">${escapeHtml(r.area || '')}</span>${r.refresh_in_hours ? ' · ' + r.refresh_in_hours.toFixed(1) + 'h' : ''}</span>`;
-  }).join('');
+
+  // Trader + distance live in the group header; this only renders the ⇄ picker.
+  if (routes.length <= 1) { container.innerHTML = ''; return; }
+
+  const pick = __routeTraderPick[it.name] || routes[0].trader;
+  const chosen = routes.find(r => r.trader === pick) || routes[0];
+
+  container.innerHTML = `<button class="route-plan-switch" title="choose another trader">⇄</button>
+    <span class="route-plan-picker" hidden>${routes.map(r => `
+      <button class="route-plan-option" data-trader="${escapeHtml(r.trader)}">${escapeHtml(r.trader)} <span class="route-plan-area">${escapeHtml(r.area || '')}</span>${distHtml(r)}${refreshHtml(r)}${r.trader === chosen.trader ? ' ✓' : ''}</button>`).join('')}</span>`;
+
+  container.querySelector('.route-plan-switch')?.addEventListener('click', () => {
+    const picker = container.querySelector('.route-plan-picker');
+    if (picker) picker.hidden = !picker.hidden;
+  });
+  container.querySelectorAll('.route-plan-option').forEach(btn => {
+    btn.addEventListener('click', () => {
+      __routeTraderPick[it.name] = btn.dataset.trader;
+      renderRoutePlan(); // re-render so the item moves to the correct trader group
+    });
+  });
 }
+// Favor items grouped by their effective target NPC (user pick or best score); target groups
+// nested under map sections (one per area, ordered by nearest map first, score as tiebreak,
+// unknown-area maps last).
+function buildFavorRouteHtml(items) {
+  const groups = new Map();
+  const noTargets = [];
+  for (const it of items) {
+    const targets = [...(it.decision.favor_targets || [])].sort((a, b) => (b.score || 0) - (a.score || 0));
+    if (!targets.length) { noTargets.push(it); continue; }
+    const pick = __routeFavorPick[it.name] || targets[0].npc;
+    const t = targets.find(x => x.npc === pick) || targets[0];
+    let g = groups.get(t.npc);
+    if (!g) {
+      g = { npc: t.npc, area: t.area || '', score: t.score ?? null, distance: t.distance_km ?? null, items: [] };
+      groups.set(t.npc, g);
+    }
+    g.items.push(it);
+  }
+  const ordered = [...groups.values()].sort((a, b) => {
+    const as = a.score != null, bs = b.score != null;
+    if (as !== bs) return as ? -1 : 1;
+    if (as) return b.score - a.score;
+    return String(a.npc).localeCompare(String(b.npc));
+  });
+  // Bucket target groups by map; each map renders one section holding its target groups.
+  const mapName = g => String(g.area || '').trim() || 'unknown area';
+  const maps = new Map();
+  for (const g of ordered) {
+    const name = mapName(g);
+    if (!maps.has(name)) maps.set(name, []);
+    maps.get(name).push(g);
+  }
+  const groupHtml = g => {
+    const dist = g.distance == null ? '' : ` · ${Number(g.distance).toFixed(1)} km`;
+    const score = g.score == null ? '' : ` · +${g.score}`;
+    return `<div class="route-plan-group">
+    <div class="route-plan-group-header">
+      <span class="route-plan-trader">${traderLinkHtml(g.npc)}${dist}${score}</span>
+    </div>
+    <div class="route-plan-group-items">${g.items.map(planFavorRow).join('')}</div>
+  </div>`;
+  };
+  const mapHtml = ([name, gs]) => `<div class="route-plan-map">
+    <div class="route-plan-map-header">📍 ${escapeHtml(name)}</div>
+    ${gs.map(groupHtml).join('')}
+  </div>`;
+  const mapDistance = gs => {
+    const ds = gs.filter(g => g.distance != null).map(g => g.distance);
+    return ds.length ? Math.min(...ds) : null;
+  };
+  const mapScore = gs => {
+    const ss = gs.filter(g => g.score != null).map(g => g.score);
+    return ss.length ? Math.max(...ss) : null;
+  };
+  const orderedMaps = [...maps.entries()].sort((a, b) => {
+    const ad = mapDistance(a[1]), bd = mapDistance(b[1]);
+    if ((ad == null) !== (bd == null)) return ad == null ? 1 : -1;
+    if (ad != null) return ad - bd;
+    const as = mapScore(a[1]), bs = mapScore(b[1]);
+    if ((as == null) !== (bs == null)) return as == null ? 1 : -1;
+    if (as != null) return bs - as;
+    return String(a[0]).localeCompare(String(b[0]));
+  });
+  const noTargetsHtml = noTargets.length
+    ? `<div class="route-plan-group">
+    <div class="route-plan-group-header">
+      <span class="route-plan-muted">no favor targets</span>
+    </div>
+    <div class="route-plan-group-items">${noTargets.map(planFavorRow).join('')}</div>
+  </div>`
+    : '';
+  return orderedMaps.map(mapHtml).join('') + noTargetsHtml;
+}
+
+async function planFavorRoutesFor(it) {
+  const targets = [...(it.decision.favor_targets || [])].sort((a, b) => (b.score || 0) - (a.score || 0));
+  if (!targets.length) return;
+  const row = [...document.querySelectorAll('.route-plan-item')]
+    .find(r => r.dataset.name === it.name);
+  const container = row?.querySelector('.route-plan-favor-routes');
+  if (!container) return;
+
+  // Best target + score live in the group header; this only renders the ⇄ picker.
+  if (targets.length <= 1) { container.innerHTML = ''; return; }
+
+  const pick = __routeFavorPick[it.name] || targets[0].npc;
+  const chosen = targets.find(t => t.npc === pick) || targets[0];
+
+  container.innerHTML = `<button class="route-plan-switch" title="choose another target">⇄</button>
+    <span class="route-plan-picker" hidden>${targets.map(t => `
+      <button class="route-plan-option" data-npc="${escapeHtml(t.npc)}">${escapeHtml(t.npc)} <span class="route-plan-area">${escapeHtml(t.area || '')}</span> +${t.score ?? 0}${t.npc === chosen.npc ? ' ✓' : ''}</button>`).join('')}</span>`;
+
+  container.querySelector('.route-plan-switch')?.addEventListener('click', () => {
+    const picker = container.querySelector('.route-plan-picker');
+    if (picker) picker.hidden = !picker.hidden;
+  });
+  container.querySelectorAll('.route-plan-option').forEach(btn => {
+    btn.addEventListener('click', () => {
+      __routeFavorPick[it.name] = btn.dataset.npc;
+      renderRoutePlan(); // re-render so the item moves to the correct target group
+    });
+  });
+}
+
 function routeText(d) {
   let base = '';
   if (d.verdict === 'favor') {
@@ -918,6 +1020,153 @@ $('#stop').addEventListener('click', async () => {
     switchView('summary');
   }
 });
+
+// Session templates: picking one pre-fills dungeon/zone + notes (still editable).
+$('#session-template-select')?.addEventListener('change', e => {
+  const t = templatePrefill(state.sessionTemplates, e.target.value);
+  if (!t) return;
+  if (t.zone) $('#dungeon').value = t.zone;
+  if (t.notes) $('#notes').value = t.notes;
+});
+
+// ── Tracked recipes panel (Recipes view): material shortfall vs active loot ──
+function renderTrackedRecipesPanel() {
+  const body = $('#tracked-recipes-body');
+  if (!body) return;
+  const names = getTrackedRecipes();
+  if (!names.length) {
+    body.innerHTML = '<div class="route-plan-empty">No tracked recipes — use Track on a search result below.</div>';
+    return;
+  }
+  const loot = Array.isArray(state.session?.loot) ? state.session.loot : null;
+  const ing = getTrackedIngredients();
+  const noSession = loot === null ? '<div class="route-plan-empty">no active session</div>' : '';
+  body.innerHTML = noSession + names.map(name => {
+    const ings = Array.isArray(ing[name]) ? ing[name] : [];
+    const rows = ings.length
+      ? trackedMaterialShortfall(ings, loot || []).map(m => {
+          const ok = m.have >= m.qty;
+          return `<div class="mat-shortfall-row ${ok ? 'ok' : 'missing'}">
+            <span class="mat-shortfall-name">${escapeHtml(m.name)}</span>
+            <span class="mat-shortfall-count">${m.have} / ${m.qty}${ok ? ' <span class="mat-ok">✓</span>' : ''}</span>
+          </div>`;
+        }).join('')
+      : '<div class="route-plan-empty">no ingredient data saved</div>';
+    return `<div class="tracked-recipe">
+      <div class="tracked-recipe-head">${escapeHtml(name)}</div>
+      ${rows}
+    </div>`;
+  }).join('');
+}
+
+// ── Sell Checklist (Tracker view): traders to visit for this session's loot ──
+async function renderSellChecklist() {
+  const body = $('#sell-checklist-body');
+  if (!body) return;
+  const s = await api('/api/session');
+  const loot = s && Array.isArray(s.loot) ? s.loot : [];
+  if (!s || !loot.length) {
+    body.innerHTML = '<div class="route-plan-empty">no active session with loot</div>';
+    return;
+  }
+
+  // Sellable unique items, most valuable first; cap planner calls at 8.
+  const byName = new Map();
+  for (const e of loot) {
+    if (!(Number(e.value) > 0)) continue;
+    const name = String(e.name || '').trim();
+    if (!name) continue;
+    const row = byName.get(name) || { name, count: 0, value: Number(e.value) || 0 };
+    row.count += Number(e.count) || 1;
+    row.value = Math.max(row.value, Number(e.value) || 0);
+    byName.set(name, row);
+  }
+  const items = [...byName.values()].sort((a, b) => b.value - a.value).slice(0, 8);
+  if (!items.length) {
+    body.innerHTML = '<div class="route-plan-empty">no sellable loot (value &gt; 0) in this session</div>';
+    return;
+  }
+
+  // Aggregate routes by trader; items with no routes are skipped silently.
+  const byTrader = new Map();
+  for (const it of items) {
+    const routes = await fetchRoutesFor(it);
+    for (const r of routes) {
+      const t = String(r?.trader || '').trim();
+      if (!t) continue;
+      const row = byTrader.get(t) || {
+        name: t,
+        area: String(r.area || ''),
+        distance: r.distance_km == null ? null : Number(r.distance_km),
+        capacity: Number(r.remaining_capacity_g) || 0,
+        items: []
+      };
+      if (!row.items.includes(it.name)) row.items.push(it.name);
+      byTrader.set(t, row);
+    }
+  }
+  const traders = [...byTrader.values()].sort(sortTradersByDistance);
+  if (!traders.length) {
+    body.innerHTML = '<div class="route-plan-empty">no traders found for this loot</div>';
+    return;
+  }
+
+  const key = sellChecklistKey(s);
+  let checks = {};
+  try { checks = JSON.parse(localStorage.getItem('gorgon_sell_check_' + key) || '{}') || {}; } catch (e) { checks = {}; }
+
+  // Bucket trader rows by map (nearest map first, unknown-area last); rows keep
+  // their distance-sorted order within each section.
+  const mapName = t => String(t.area || '').trim() || 'unknown area';
+  const maps = new Map();
+  for (const t of traders) {
+    const name = mapName(t);
+    if (!maps.has(name)) maps.set(name, []);
+    maps.get(name).push(t);
+  }
+  const rowHtml = t => {
+    const dist = t.distance != null ? t.distance.toFixed(1) + ' km' : '?';
+    return `<label class="sell-check-row">
+      <input type="checkbox" data-trader="${escapeHtml(t.name)}" ${checks[t.name] ? 'checked' : ''}>
+      <span class="sell-check-name">${escapeHtml(t.name)}</span>
+      <span class="sell-check-area">${escapeHtml(t.area)}</span>
+      <span class="sell-check-items">${t.items.map(escapeHtml).join(', ')}</span>
+      <span class="sell-check-dist">${dist}</span>
+      <span class="sell-check-cap">${Math.round(t.capacity).toLocaleString()}g</span>
+    </label>`;
+  };
+  const mapDistance = ts => {
+    const ds = ts.filter(t => t.distance != null).map(t => t.distance);
+    return ds.length ? Math.min(...ds) : null;
+  };
+  const orderedMaps = [...maps.entries()].sort((a, b) => {
+    const ad = mapDistance(a[1]), bd = mapDistance(b[1]);
+    if ((ad == null) !== (bd == null)) return ad == null ? 1 : -1;
+    if (ad != null) return ad - bd;
+    return String(a[0]).localeCompare(String(b[0]));
+  });
+
+  body.innerHTML = `<div class="sell-checklist-toolbar">
+      <span class="muted">${traders.length} trader${traders.length > 1 ? 's' : ''} · ${items.length} item${items.length > 1 ? 's' : ''}</span>
+      <button class="add-btn" id="sell-checklist-reset">Reset</button>
+    </div>` +
+    orderedMaps.map(([name, ts]) => `
+      <div class="route-plan-map">
+        <div class="route-plan-map-header">📍 ${escapeHtml(name)}</div>
+        ${ts.map(rowHtml).join('')}
+      </div>`).join('');
+
+  body.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      checks[cb.dataset.trader] = cb.checked;
+      localStorage.setItem('gorgon_sell_check_' + key, JSON.stringify(checks));
+    });
+  });
+  body.querySelector('#sell-checklist-reset').addEventListener('click', () => {
+    localStorage.removeItem('gorgon_sell_check_' + key);
+    renderSellChecklist();
+  });
+}
 
 // Skills view — XP per hour + NPC time tracker
 function renderSkillsView() {
@@ -1022,6 +1271,7 @@ function renderSkillsView() {
 function renderRecipesView() {
   const container = $('#recipes-list');
   if (!container) return;
+  renderTrackedRecipesPanel();
   const recipes = state.recipes;
   if (!recipes) {
     container.innerHTML = '<div class="summary-empty">Loading recipes...</div>';
@@ -1129,6 +1379,7 @@ function recipesLiveSearch() {
       const card = document.createElement('div');
       card.className = 'history-card';
       card.style.cursor = 'default';
+      const tracked = getTrackedRecipes().includes(r.name);
       card.innerHTML = `<div class="history-card-body">
         <div class="history-card-header">
           <div class="history-card-dungeon">${escapeHtml(r.name || 'Unnamed')}</div>
@@ -1138,7 +1389,16 @@ function recipesLiveSearch() {
           ${r.result_item ? `<div class="history-stat"><div class="history-stat-label">Result</div><div class="history-stat-value" style="font-size:12px">${escapeHtml(r.result_item)}</div></div>` : ''}
           <div class="history-stat"><div class="history-stat-label">Ingredients</div><div class="history-stat-value" style="font-size:12px">${(r.ingredients || []).map(i => escapeHtml(i)).join(', ') || '—'}</div></div>
         </div>
+        <div class="history-card-actions">
+          <button class="track-recipe-btn${tracked ? ' tracked' : ''}">${tracked ? 'Untrack' : 'Track'}</button>
+        </div>
       </div>`;
+      card.querySelector('.track-recipe-btn').addEventListener('click', () => {
+        toggleTrackedRecipe(r.name, r.ingredients);
+        recipesLiveSearch();
+        renderTrackedRecipesPanel();
+        if (state.currentView === 'tracker' && state.session) renderLootTable(state.session);
+      });
       container.appendChild(card);
     }
   }, 300);
@@ -1680,6 +1940,155 @@ setInterval(() => {
 }, 1000);
 
 // Zones view — show zone history from session snapshot
+
+// ---- Session tags + drop-rate confidence helpers (pure) ----
+function fmtZoneTime(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`
+    : `${m}:${String(r).padStart(2, '0')}`;
+}
+
+// Compact confidence suffix for a drop source/zone entry: sample count (or a
+// low-sample warning) plus the 95% Wilson lower bound when present.
+function dropConfidenceSuffix(e) {
+  if (!e) return '';
+  const kills = Number(e.kills) || 0;
+  const conf = Number(e.conf_lower);
+  if (!e.low_sample && !kills && !conf) return '';
+  let bits = [];
+  if (e.low_sample) bits.push(`⚠ low sample (n=${kills})`);
+  else if (kills) bits.push(`· ${kills} samples`);
+  if (conf > 0) bits.push(`≥${conf.toFixed(1)}%`);
+  return ' <span class="muted">' + bits.join(' ') + '</span>';
+}
+
+function addSessionTag(tags, tag) {
+  const t = String(tag || '').trim();
+  if (!t) return Array.isArray(tags) ? tags.slice() : [];
+  const list = Array.isArray(tags) ? tags.slice() : [];
+  if (list.some(x => String(x).toLowerCase() === t.toLowerCase())) return list;
+  list.push(t);
+  return list;
+}
+
+function removeSessionTag(tags, tag) {
+  const t = String(tag || '').toLowerCase();
+  return (Array.isArray(tags) ? tags : []).filter(x => String(x).toLowerCase() !== t);
+}
+
+function sessionTagsMatch(tags, query) {
+  const q = String(query || '').toLowerCase();
+  if (!q) return true;
+  return (Array.isArray(tags) ? tags : []).some(x => String(x).toLowerCase().includes(q));
+}
+
+// ---- Tracked recipes (localStorage) ----
+const TRACKED_RECIPES_KEY = 'gorgon_tracked_recipes';
+const TRACKED_INGREDIENTS_KEY = 'gorgon_tracked_recipe_ingredients';
+
+function getTrackedRecipes() {
+  try {
+    const v = JSON.parse(localStorage.getItem(TRACKED_RECIPES_KEY) || '[]');
+    return Array.isArray(v) ? v : [];
+  } catch (e) { return []; }
+}
+
+function getTrackedIngredients() {
+  try {
+    const v = JSON.parse(localStorage.getItem(TRACKED_INGREDIENTS_KEY) || '{}');
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch (e) { return {}; }
+}
+
+// Toggle a recipe in the tracked set. ingredients = raw "Name x2" strings from
+// the search API (stored so the shortfall panel and loot highlight survive reloads).
+function toggleTrackedRecipe(name, ingredients) {
+  const names = getTrackedRecipes();
+  const ing = getTrackedIngredients();
+  const idx = names.indexOf(name);
+  if (idx >= 0) {
+    names.splice(idx, 1);
+    delete ing[name];
+  } else {
+    names.push(name);
+    if (Array.isArray(ingredients) && ingredients.length) ing[name] = ingredients.slice();
+  }
+  localStorage.setItem(TRACKED_RECIPES_KEY, JSON.stringify(names));
+  localStorage.setItem(TRACKED_INGREDIENTS_KEY, JSON.stringify(ing));
+  return names;
+}
+
+// Parse a pre-formatted ingredient string "Iron Ingot x2" → {name, qty}.
+// Splits on the LAST " x" so item names containing "x" still parse; missing or
+// malformed quantity defaults to 1; empty input → null.
+function parseIngredient(str) {
+  const raw = String(str || '').trim();
+  if (!raw) return null;
+  const idx = raw.lastIndexOf(' x');
+  if (idx < 0) return { name: raw, qty: 1 };
+  const name = raw.slice(0, idx).trim();
+  const qty = parseInt(raw.slice(idx + 2).trim(), 10);
+  return { name: name || raw, qty: Number.isFinite(qty) && qty > 0 ? qty : 1 };
+}
+
+function ingredientNames(ingredients) {
+  return (Array.isArray(ingredients) ? ingredients : [])
+    .map(parseIngredient).filter(Boolean).map(i => i.name);
+}
+
+// "Have" counts per ingredient from active-session loot (case-insensitive match).
+function trackedMaterialShortfall(ingredients, loot) {
+  const have = new Map();
+  for (const l of Array.isArray(loot) ? loot : []) {
+    const n = String(l.name || '').trim().toLowerCase();
+    if (!n) continue;
+    have.set(n, (have.get(n) || 0) + (Number(l.count) || 0));
+  }
+  return (Array.isArray(ingredients) ? ingredients : [])
+    .map(parseIngredient).filter(Boolean)
+    .map(ing => ({ name: ing.name, qty: ing.qty, have: have.get(ing.name.toLowerCase()) || 0 }));
+}
+
+function isTrackedMaterial(itemName, trackedIngredients) {
+  const n = String(itemName || '').trim().toLowerCase();
+  if (!n) return false;
+  return Object.values(trackedIngredients || {}).some(list =>
+    (Array.isArray(list) ? list : []).some(x => String(x).trim().toLowerCase() === n));
+}
+
+// Sell checklist: nearest traders first, unknown-distance traders after.
+function sortTradersByDistance(a, b) {
+  const ad = a.distance != null, bd = b.distance != null;
+  if (ad !== bd) return ad ? -1 : 1;
+  if (ad) return a.distance - b.distance;
+  return String(a.name || '').localeCompare(String(b.name || ''));
+}
+
+// localStorage key suffix for a session's sell-checklist state.
+function sellChecklistKey(s) {
+  const t = s && (s.started_at || s.first_seen);
+  return t ? String(t).replace(/[^0-9A-Za-z]/g, '') : 'current';
+}
+
+// Template pre-fill helper: find a template by name → {notes, zone} (zone optional).
+function templatePrefill(templates, name) {
+  const t = (Array.isArray(templates) ? templates : []).find(x => x && x.name === name);
+  if (!t) return null;
+  return { notes: String(t.notes || ''), zone: String(t.zone || '') };
+}
+
+function populateTemplateSelect() {
+  const sel = $('#session-template-select');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">No template</option>' +
+    (state.sessionTemplates || []).map(t =>
+      `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join('');
+  sel.value = cur;
+}
+
 // Drop Rates view — aggregated across sessions
 async function renderDropRatesView() {
   const container = $('#drop-list');
@@ -1733,7 +2142,7 @@ async function renderDropRatesView() {
     const src = (Array.isArray(d.sources) && d.sources.length > 0) ? d.sources[0] : null;
     const srcName = src ? src.name : (d.primary_source || '');
     const srcCell = srcName && srcName !== 'Unknown'
-      ? `<button class="drop-source-link" data-source="${escapeHtml(srcName)}">${escapeHtml(srcName)}</button>${src ? ` (${(src.chance || 0).toFixed(1)}%)` : ''}`
+      ? `<button class="drop-source-link" data-source="${escapeHtml(srcName)}">${escapeHtml(srcName)}</button>${src ? ` (${(src.chance || 0).toFixed(1)}%)${dropConfidenceSuffix(src)}` : ''}`
       : 'Unknown';
     html += `<tr>
       <td style="padding:4px 8px;border-bottom:1px solid var(--row)"><button class="drop-toggle" data-toggle="1" aria-expanded="false" title="Show drop details">▸</button> ${escapeHtml(d.name)}</td>
@@ -1760,12 +2169,12 @@ function dropDetailHtml(d) {
   let html = '';
   if (sources.length) {
     html += `<div class="drop-detail-block"><span class="drop-detail-label">Drops from</span> ` +
-      sources.map(s => `<button class="drop-source-link" data-source="${escapeHtml(s.name)}">${escapeHtml(s.name)}</button> <span class="drop-detail-count">(${s.count || 0}, ${(s.chance || 0).toFixed(1)}%)</span>`).join(', ') +
+      sources.map(s => `<button class="drop-source-link" data-source="${escapeHtml(s.name)}">${escapeHtml(s.name)}</button> <span class="drop-detail-count">(${s.count || 0}, ${(s.chance || 0).toFixed(1)}%)</span>${dropConfidenceSuffix(s)}`).join(', ') +
       '</div>';
   }
   if (zones.length) {
     html += `<div class="drop-detail-block"><span class="drop-detail-label">Zones</span> ` +
-      zones.map(z => `${escapeHtml(z.name)} <span class="drop-detail-count">(${z.count || 0}, ${(z.chance || 0).toFixed(1)}%)</span>`).join(', ') +
+      zones.map(z => `${escapeHtml(z.name)} <span class="drop-detail-count">(${z.count || 0}, ${(z.chance || 0).toFixed(1)}%)</span>${dropConfidenceSuffix(z)}`).join(', ') +
       '</div>';
   }
   return html;

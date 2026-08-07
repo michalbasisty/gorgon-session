@@ -38,7 +38,7 @@ function loadSandbox() {
     addEventListener() {},
     location: { search: '', origin: 'http://test' },
     localStorage: { getItem: () => null, setItem() {} },
-    fetch: async () => ({ ok: true, status: 200, json: async () => [] }),
+    fetch: async () => ({ ok: true, status: 200, json: async () => [], text: async () => '[]' }),
     console, AbortController, setTimeout, clearTimeout,
     setInterval: () => 0, Date,
     CanvasRenderingContext2D: { prototype: {} }, // shared.js polyfills roundRect at load
@@ -144,6 +144,41 @@ async function main() {
     assert.strictEqual(run('fmtElapsed(3661000)'), '1h01m');
   });
 
+  check('fmtZoneTime formats m:ss and h:mm:ss', () => {
+    assert.strictEqual(run('fmtZoneTime(0)'), '0:00');
+    assert.strictEqual(run('fmtZoneTime(65)'), '1:05');
+    assert.strictEqual(run('fmtZoneTime(3661)'), '1:01:01');
+    assert.strictEqual(run('fmtZoneTime(undefined)'), '0:00');
+  });
+
+  check('dropConfidenceSuffix renders compact confidence badge', () => {
+    assert.strictEqual(run('dropConfidenceSuffix(null)'), '');
+    assert.strictEqual(run('dropConfidenceSuffix({})'), '');
+    assert.strictEqual(run('dropConfidenceSuffix({kills: 24})'), ' <span class="muted">· 24 samples</span>');
+    assert.strictEqual(run('dropConfidenceSuffix({kills: 5, low_sample: true})'), ' <span class="muted">⚠ low sample (n=5)</span>');
+    assert.strictEqual(run('dropConfidenceSuffix({kills: 24, conf_lower: 12.34})'), ' <span class="muted">· 24 samples ≥12.3%</span>');
+  });
+
+  check('addSessionTag trims, dedupes case-insensitively, keeps first case', () => {
+    assert.deepStrictEqual(j(run('addSessionTag([], "  Farm ")')), ['Farm']);
+    assert.deepStrictEqual(j(run('addSessionTag(["Farm", "Combat"], "farm")')), ['Farm', 'Combat']);
+    assert.deepStrictEqual(j(run('addSessionTag(["A"], "   ")')), ['A']); // empty tag dropped
+    assert.deepStrictEqual(j(run('addSessionTag(null, "X")')), ['X']);
+  });
+
+  check('removeSessionTag removes case-insensitively', () => {
+    assert.deepStrictEqual(j(run('removeSessionTag(["Farm", "Combat"], "FARM")')), ['Combat']);
+    assert.deepStrictEqual(j(run('removeSessionTag(["A"], "missing")')), ['A']);
+    assert.deepStrictEqual(j(run('removeSessionTag(null, "X")')), []);
+  });
+
+  check('sessionTagsMatch is case-insensitive substring', () => {
+    assert.ok(run('sessionTagsMatch(["Farm", "Combat"], "arm")'));
+    assert.ok(!run('sessionTagsMatch(["Farm"], "xyz")'));
+    assert.ok(run('sessionTagsMatch(["Farm"], "")')); // empty query matches all
+    assert.ok(!run('sessionTagsMatch(null, "x")'));
+  });
+
   check('parseResetDurationMinutes parses "Nd Nh Nm" reset text', () => {
     assert.strictEqual(run('parseResetDurationMinutes("2d 3h 4m")'), 3064);
     assert.strictEqual(run('parseResetDurationMinutes("1d")'), 1440);
@@ -188,6 +223,81 @@ async function main() {
     assert.strictEqual(run('normalizeTargetKind("armour")'), 'armor');
     assert.strictEqual(run('normalizeTargetKind("health")'), 'health');
     assert.strictEqual(run('normalizeTargetKind("")'), 'health');
+  });
+
+  console.log('shared.js — tracked recipes / sell checklist / templates');
+  check('parseIngredient strips the last " x" suffix', () => {
+    assert.deepStrictEqual(j(run(`parseIngredient(${q('Iron Ingot x2')})`)), { name: 'Iron Ingot', qty: 2 });
+    assert.deepStrictEqual(j(run(`parseIngredient(${q('Exalted X-Guard x3')})`)), { name: 'Exalted X-Guard', qty: 3 }); // "x" in name
+    assert.deepStrictEqual(j(run(`parseIngredient(${q('Iron Ingot')})`)), { name: 'Iron Ingot', qty: 1 }); // no suffix
+    assert.deepStrictEqual(j(run(`parseIngredient(${q('Iron Ingot x')})`)), { name: 'Iron Ingot', qty: 1 }); // malformed qty
+    assert.strictEqual(run('parseIngredient("")'), null);
+    assert.strictEqual(run('parseIngredient(null)'), null);
+  });
+
+  check('ingredientNames maps to item names only', () => {
+    assert.deepStrictEqual(j(run('ingredientNames(["Iron Ingot x2", "Coal x1", "Bogus"])')),
+      ['Iron Ingot', 'Coal', 'Bogus']);
+    assert.deepStrictEqual(j(run('ingredientNames(null)')), []);
+  });
+
+  check('trackedMaterialShortfall matches loot case-insensitively', () => {
+    const loot = [
+      { name: 'iron ingot', count: 3 },
+      { name: 'Coal', count: 5 },
+    ];
+    const out = j(run(`trackedMaterialShortfall(${q(['Iron Ingot x2', 'Coal x10', 'Silk x1'])}, ${q(loot)})`));
+    assert.deepStrictEqual(out, [
+      { name: 'Iron Ingot', qty: 2, have: 3 },
+      { name: 'Coal', qty: 10, have: 5 },
+      { name: 'Silk', qty: 1, have: 0 },
+    ]);
+  });
+
+  check('isTrackedMaterial matches any tracked ingredient name', () => {
+    const map = { Smelting: ['Iron Ingot', 'Coal'] };
+    assert.ok(run(`isTrackedMaterial(${q('iron ingot')}, ${q(map)})`));
+    assert.ok(run(`isTrackedMaterial(${q('Coal')}, ${q(map)})`));
+    assert.ok(!run(`isTrackedMaterial(${q('Silk')}, ${q(map)})`));
+    assert.ok(!run('isTrackedMaterial("", {})'));
+    assert.ok(!run('isTrackedMaterial("Iron Ingot", null)'));
+  });
+
+  check('sortTradersByDistance: known distances first (asc), null after', () => {
+    const traders = [
+      { name: 'Far', distance: 30 },
+      { name: 'Unknown', distance: null },
+      { name: 'Near', distance: 2.5 },
+      { name: 'AlsoUnknown', distance: null },
+    ];
+    const sorted = j(run(`[...${q(traders)}].sort(sortTradersByDistance)`));
+    assert.deepStrictEqual(sorted.map(t => t.name), ['Near', 'Far', 'AlsoUnknown', 'Unknown']);
+  });
+
+  check('sellChecklistKey sanitizes started_at / falls back to first_seen', () => {
+    assert.strictEqual(run('sellChecklistKey({ started_at: "2026-08-07T12:04:47Z" })'), '20260807T120447Z');
+    assert.strictEqual(run('sellChecklistKey({ first_seen: 12345 })'), '12345');
+    assert.strictEqual(run('sellChecklistKey({})'), 'current');
+    assert.strictEqual(run('sellChecklistKey(null)'), 'current');
+  });
+
+  check('templatePrefill finds by name; empty zone only fills notes', () => {
+    const templates = [
+      { name: 'Farming', zone: 'Serbule', notes: 'gather herbs' },
+      { name: 'NoZone', zone: '', notes: 'just notes' },
+    ];
+    assert.deepStrictEqual(j(run(`templatePrefill(${q(templates)}, ${q('Farming')})`)), { notes: 'gather herbs', zone: 'Serbule' });
+    assert.deepStrictEqual(j(run(`templatePrefill(${q(templates)}, ${q('NoZone')})`)), { notes: 'just notes', zone: '' });
+    assert.strictEqual(run(`templatePrefill(${q(templates)}, ${q('Missing')})`), null);
+    assert.strictEqual(run('templatePrefill(null, "X")'), null);
+  });
+
+  check('sessionTemplateList tolerates missing/undefined config key', () => {
+    assert.deepStrictEqual(j(run('sessionTemplateList({ session_templates: [{ name: "A", notes: "n" }] })')),
+      [{ name: 'A', notes: 'n' }]);
+    assert.deepStrictEqual(j(run('sessionTemplateList({})')), []);
+    assert.deepStrictEqual(j(run('sessionTemplateList(null)')), []);
+    assert.deepStrictEqual(j(run('sessionTemplateList(undefined)')), []);
   });
 
   console.log('favor-traders.js — map-name matching');

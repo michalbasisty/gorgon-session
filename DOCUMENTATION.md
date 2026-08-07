@@ -88,8 +88,10 @@ Manages persistent settings stored in `~/.gorgon-session/config.json`.
       BackupEnabled         bool              `json:"backup_enabled"`
       PlayerLogPath         string            `json:"player_log_path"`
       Overlay               OverlaySettings   `json:"overlay"`
+      SessionTemplates      []SessionTemplate `json:"session_templates,omitempty"`
   }
   ```
+  `SessionTemplate` = `{name, zone?, notes}` — pre-filled notes/goals offered when starting a session; `zone` empty = applies to any zone. Managed from Settings (add/delete) and POSTed to `/api/config` as a full-array replacement.
   `OverlaySettings` (read by the overlay process at startup; opacity changes are additionally **polled live** — the overlay re-applies `opacity`/`click_through_opacity` within ~2s while open, no restart needed) has:
   `opacity` (30..100, default 98), `click_through_opacity` (default 78), `click_through_by_default` (default false), `position` (`"bottom-right"`|`"bottom-left"`|`"top-right"`|`"top-left"`), `theme` (`"dark"`|`"light"`), `accent_color` (hex, e.g. `#5b93ff`).
 - **Platform-Specific Defaults**:
@@ -259,7 +261,9 @@ All API endpoints bind to `http://127.0.0.1:7777` by default.
 | **POST** | `/api/session/start` | Starts a new session. | `{"dungeon": "Serbule Crypt"}` | `Snapshot` |
 | **POST** | `/api/session/stop` | Stops the active session and writes a report. | — | `Snapshot` |
 | **GET** | `/api/session/{id}` | Details of a specific past session report. | — | `Snapshot` |
-| **GET** | `/api/sessions` | Summary list of all past sessions. | — | `[]SessionSummary` |
+| **PATCH** | `/api/session/{id}` | Replace a past session's notes and tags (full replacement of both). | `{"notes":"...", "tags":["..."]}` | `Snapshot` |
+| **GET** | `/api/session/{id}/zones` | Per-zone breakdown of one session (time, loot, kills, deaths, XP, per-hour rates). | — | `[]zoneStat` |
+| **GET** | `/api/sessions` | Summary list of all past sessions (includes `tags`). | — | `[]SessionSummary` |
 | **GET** | `/api/loot` | List of looted items in the active session. | — | `[]LootEntry` |
 | **POST** | `/api/loot-note` | Add/edit a note on a looted item. | `{name, note}` | — |
 | **GET** | `/api/feed` | **SSE** live event stream (see §4.2). | — | `text/event-stream` |
@@ -277,7 +281,7 @@ All API endpoints bind to `http://127.0.0.1:7777` by default.
 | **GET** | `/api/prices/{name}` | Price summary for one item. | — | `Summary` |
 | **GET** | `/api/prices/trends` | Price history for one item. | `?name=` | `{entries: [...]}` |
 | **GET** | `/api/zone-npcs` | NPCs in the current zone. | — | `[]` |
-| **GET** | `/api/drop-rates` | Per-enemy/per-zone drop rates. | `?zone=` | `[]` |
+| **GET** | `/api/drop-rates` | Per-enemy/per-zone drop rates (rows include `kills`, `conf_lower` = 95% Wilson lower bound on per-kill rate, `low_sample` = kills < 30). | `?zone=` | `[]` |
 | **GET** | `/api/traders` | All traders + weekly limits. | — | `[]` |
 | **GET** | `/api/traders/schedule` | Trader refresh schedule. | — | `[]` |
 | **GET** | `/api/traders/history` | Trader refresh event history. | — | `[]` |

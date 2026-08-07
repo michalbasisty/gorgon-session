@@ -6,6 +6,7 @@ loadAreas().catch(e => toast('Areas: ' + e.message, 'error'));
 loadSkills().catch(e => toast('Skills: ' + e.message, 'error'));
 loadRecipes().catch(e => toast('Recipes: ' + e.message, 'error'));
 loadItems().catch(e => toast('Items: ' + e.message, 'error'));
+loadTemplates().catch(e => toast('Templates: ' + e.message, 'error'));
 
 async function loadAreas() {
   const areas = await api('/api/areas');
@@ -28,4 +29,12 @@ async function loadItems() {
     state.itemNames = {};
     for (const i of items) state.itemNames[i.ItemID] = i.Name;
   }
+}
+
+// Session templates for the start-controls dropdown (older configs have no key).
+async function loadTemplates() {
+  const cfg = await api('/api/config');
+  if (!cfg) return;
+  state.sessionTemplates = Array.isArray(cfg.session_templates) ? cfg.session_templates : [];
+  populateTemplateSelect();
 }

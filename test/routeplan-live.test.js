@@ -1,6 +1,7 @@
 // Live end-to-end check: runs web/shared.js renderRoutePlan against the real
-// running server (http://127.0.0.1:7777) with the real session + real trader
-// endpoints, then inspects the rendered trader-centric HTML.
+// running server (http://127.0.0.1:7777) with the real session + real item
+// endpoints, then inspects the rendered item-centric HTML (one trader per sell
+// item + ⇄ switch).
 // Run: node test/routeplan-live.test.js
 const fs = require('fs');
 const vm = require('vm');
@@ -22,10 +23,25 @@ function stubEl() {
 
 function makeSandbox(fetchImpl) {
   const resultsEl = stubEl();
+  // Sell rows are found via document.querySelectorAll('.route-plan-item');
+  // materialize stubs from the items already rendered into resultsEl, each with
+  // a .route-plan-routes child whose innerHTML records planRoutesFor output.
+  const routesStubs = {};
   const document = new Proxy({}, {
     get(t, prop) {
       if (prop === 'querySelector') return sel => (sel === '#route-plan-results' ? resultsEl : stubEl());
-      if (prop === 'querySelectorAll') return () => [];
+      if (prop === 'querySelectorAll') return sel => {
+        if (sel !== '.route-plan-item') return [];
+        const names = [...resultsEl.innerHTML.matchAll(/data-name="([^"]+)"/g)].map(m => m[1]);
+        return names.map(name => {
+          const routes = stubEl();
+          routesStubs[name] = routes;
+          const row = stubEl();
+          row.dataset.name = name;
+          row.querySelector = s => (s === '.route-plan-routes' ? routes : stubEl());
+          return row;
+        });
+      };
       if (prop === 'createElement') return () => stubEl();
       if (prop === 'addEventListener') return () => {};
       if (prop === 'body') return stubEl();
@@ -43,14 +59,14 @@ function makeSandbox(fetchImpl) {
   };
   vm.runInNewContext(code, sandbox, { filename: 'shared.js' });
   vm.runInNewContext('state.currentView = "tracker"', sandbox);
-  return { sandbox, resultsEl };
+  return { sandbox, resultsEl, routesStubs };
 }
 
 async function main() {
   const liveFetch = async (url, opts) => {
     const res = await fetch('http://127.0.0.1:7777' + url, opts);
     const text = await res.text();
-    return { ok: res.ok, status: res.status, json: async () => { try { return JSON.parse(text); } catch { return null; } } };
+    return { ok: res.ok, status: res.status, json: async () => { try { return JSON.parse(text); } catch { return null; } }, text: async () => text };
   };
 
   const t = makeSandbox(liveFetch);
@@ -62,24 +78,24 @@ async function main() {
   console.log('----------------------------------------');
 
   // Live session (seeded): Leather Armor/Mushroom/Steel Ore → sell, Maple Wood → favor.
-  const hasCards = html.includes('route-trader-card');
-  const hasSell = html.includes('route-section-title sell');
-  const hasFavor = html.includes('route-section-title favor');
-  const hasKm = /\(\d+(\.\d+)? km\)/.test(html);
+  const hasSell = html.includes('route-plan-block-title sell');
+  const hasFavor = html.includes('route-plan-block-title favor');
+  const hasKeep = html.includes('route-plan-block-title keep');
 
-  console.log('trader cards rendered:', hasCards);
-  console.log('sell sections rendered:', hasSell);
-  console.log('favor sections rendered:', hasFavor);
-  console.log('distance badges (km):', hasKm);
+  console.log('sell block rendered:', hasSell);
+  console.log('favor block rendered:', hasFavor);
+  console.log('keep block rendered:', hasKeep);
 
-  assert(hasCards, 'expected trader-centric cards in live render');
-  assert(hasSell, 'expected sell sections');
-  assert(hasFavor, 'expected favor sections (Maple Wood → Kohan etc)');
-  assert(html.includes('Christina Fells'), 'expected Christina Fells card (Leather Armor seller)');
-  assert(html.includes('Leather Armor'), 'expected Leather Armor item listed');
+  assert(hasSell, 'expected sell block in live render');
+  assert(hasFavor, 'expected favor block in live render');
+  assert(html.includes('route-plan-item'), 'expected item rows in live render');
 
-  // distance_km is null against the real CDN (no coords) → no (x.x km) badges.
-  assert(!hasKm, 'no distance badges expected: real areas.json has no coordinates');
+  // Trader rows are data-dependent (sell items must match trader keywords in the
+  // live favor DB); the deterministic mock test covers that. Report, don't assert.
+  const anyTraderRow = Object.values(t.routesStubs).some(r => r.innerHTML.includes('route-plan-link'));
+  const hasSwitch = Object.values(t.routesStubs).some(r => r.innerHTML.includes('route-plan-switch'));
+  console.log('trader suggestion rows:', anyTraderRow);
+  console.log('switch buttons present:', hasSwitch);
 
   console.log('LIVE ROUTE PLAN RENDER OK');
 }

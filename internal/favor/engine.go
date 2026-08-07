@@ -110,10 +110,11 @@ const (
 
 // Target is a single NPC favor suggestion with score.
 type Target struct {
-	NPC     string   `json:"npc"`
-	Area    string   `json:"area"`
-	Score   float64  `json:"score"`
-	Matches []string `json:"matches"`
+	NPC        string   `json:"npc"`
+	Area       string   `json:"area"`
+	Score      float64  `json:"score"`
+	DistanceKm *float64 `json:"distance_km,omitempty"`
+	Matches    []string `json:"matches"`
 }
 
 // Resolve produces a decision for one item identified by its keywords + value.

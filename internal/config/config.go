@@ -54,6 +54,18 @@ type Config struct {
 	// Overlay configures the native always-on-top HUD window (position,
 	// opacity, click-through, theme). Applied by the overlay process at startup.
 	Overlay OverlaySettings `json:"overlay"`
+	// SessionTemplates are pre-filled notes/goals the UI offers when starting
+	// a session. Each template names an optional zone and free-form notes.
+	SessionTemplates []SessionTemplate `json:"session_templates,omitempty"`
+}
+
+// SessionTemplate is a pre-filled notes/goals template offered when starting
+// a session. Zone may be empty (applies to any zone); Notes is the text the
+// new session's notes field is initialized with.
+type SessionTemplate struct {
+	Name  string `json:"name"`
+	Zone  string `json:"zone,omitempty"`
+	Notes string `json:"notes"`
 }
 
 // OverlaySettings configures the native always-on-top HUD window. Values are

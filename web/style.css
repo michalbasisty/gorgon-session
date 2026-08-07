@@ -2988,58 +2988,106 @@ body.compact header { padding: 8px 16px; }
   cursor: pointer;
 }
 .route-plan-trader { white-space: nowrap; }
+.route-plan-switch {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--row-alt);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 12px;
+  vertical-align: middle;
+}
+.route-plan-switch:hover { border-color: var(--accent); color: var(--accent); }
+.route-plan-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+.route-plan-picker[hidden] { display: none; }
+.route-plan-option {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 2px 6px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+.route-plan-option:hover { background: var(--row-alt); color: var(--accent); }
+.route-plan-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin: 6px 0;
+  background: var(--bg);
+  overflow: hidden;
+}
+.route-plan-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--row-alt);
+  font-size: 13px;
+}
+.route-plan-group-items { padding: 2px 0; }
+.route-plan-group-items .route-plan-item:last-child { border-bottom: none; }
+.route-plan-map {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 8px 0;
+  overflow: hidden;
+}
+.route-plan-map-header {
+  padding: 5px 8px;
+  background: var(--row-alt);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.route-plan-map .route-plan-group {
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  border-top: 1px solid var(--row-alt);
+}
+.route-plan-map .route-plan-group:first-child { border-top: none; }
+.route-plan-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.route-plan-tab {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.route-plan-tab.active {
+  background: var(--row-alt);
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .route-plan-empty {
   padding: 10px;
   color: var(--muted);
   font-size: 13px;
 }
 
-/* ===== Trader-centric route plan cards ===== */
-.route-trader-card {
-  margin-top: 8px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-.route-trader-card:first-of-type { margin-top: 4px; }
-.route-trader-head {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 8px 10px;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 13px;
-  user-select: none;
-  background: var(--row-alt);
-}
-.route-trader-head:hover { color: var(--accent); }
-.route-trader-distance {
-  color: var(--muted);
-  font-weight: 400;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.route-trader-area {
-  padding: 6px 10px 2px;
-  color: var(--muted);
-  font-size: 11px;
-}
-.route-section-title {
-  margin: 8px 10px 4px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 600;
-}
-.route-section-title.sell { color: var(--sell-vendor); }
-.route-section-title.favor { color: var(--favor); }
-.route-trader-card .route-plan-item {
-  padding: 3px 10px;
-  justify-content: space-between;
-}
-.route-trader-card .route-plan-item-name { overflow-wrap: anywhere; }
 .route-plan-loading {
   padding: 10px;
   color: var(--muted);
@@ -3478,3 +3526,162 @@ body.overlay-mode[data-theme="light"] .overlay-bar,
 body.overlay-mode[data-theme="light"] .overlay-bottom {
   background: #f0f2f5;
 }
+
+/* ===== Session Tags ===== */
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--row);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 12px;
+}
+.tag-chip .tag-x {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  line-height: 1;
+}
+.tag-chip .tag-x:hover { color: var(--fg); }
+.history-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.history-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+.history-detail-tag-add {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+.history-detail-tag-add input {
+  flex: 1;
+  max-width: 240px;
+}
+
+/* ===== Header template select ===== */
+.controls select {
+  padding: 7px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 13px;
+  max-width: 180px;
+  cursor: pointer;
+}
+body.overlay-mode .controls select { max-width: 110px; padding: 5px 10px; font-size: 12px; }
+
+/* ===== Tracked Recipes ===== */
+.tracked-recipes-panel { margin-bottom: 12px; }
+.history-card-actions { margin-top: 8px; }
+.track-recipe-btn {
+  padding: 3px 10px;
+  background: var(--border);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.track-recipe-btn:hover { border-color: var(--accent); color: var(--accent); }
+.track-recipe-btn.tracked { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tracked-recipe { padding: 8px 0; border-bottom: 1px solid var(--row-alt); }
+.tracked-recipe:last-child { border-bottom: none; }
+.tracked-recipe-head { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+.mat-shortfall-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.mat-shortfall-row.missing .mat-shortfall-count { color: #e74c3c; font-weight: 600; }
+.mat-shortfall-row.ok .mat-shortfall-count { color: var(--favor); }
+.mat-ok { color: var(--favor); }
+
+/* ===== Sell Checklist ===== */
+.sell-checklist-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 8px 0;
+  font-size: 12px;
+}
+.sell-check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--row-alt);
+  font-size: 13px;
+  cursor: pointer;
+}
+.sell-check-row:last-child { border-bottom: none; }
+.sell-check-row input { margin: 0; accent-color: var(--accent); }
+.sell-check-name { font-weight: 600; min-width: 140px; }
+.sell-check-area { color: var(--muted); font-size: 12px; min-width: 110px; }
+.sell-check-items { flex: 1; color: var(--muted); font-size: 12px; }
+.sell-check-dist { color: var(--muted); font-size: 12px; min-width: 60px; text-align: right; }
+.sell-check-cap { color: var(--sell-vendor); font-size: 12px; font-weight: 600; min-width: 70px; text-align: right; }
+
+/* ===== Loot material highlight ===== */
+tr.loot-material,
+tr.loot-material:nth-child(even) { background: var(--accent-dim); }
+tr.loot-material:hover { background: rgba(91, 147, 255, 0.2); }
+.material-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  vertical-align: middle;
+}
+
+/* ===== Session Templates (Settings) ===== */
+.session-templates-add { align-items: flex-start; }
+.session-templates-add textarea {
+  flex: 1;
+  min-width: 160px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+.st-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--row);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 4px;
+}
+.st-item-main { flex: 1; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.st-name { font-weight: 600; font-size: 13px; }
+.st-zone { color: var(--accent); font-size: 12px; }
+.st-notes { color: var(--muted); font-size: 12px; }

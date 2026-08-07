@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/michalbasisty/gorgon-session/internal/favor"
 	"github.com/michalbasisty/gorgon-session/internal/session"
 )
 
@@ -20,7 +21,9 @@ import (
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, s.Sess.Snapshot())
+		snap := s.Sess.Snapshot()
+		s.enrichFavorDistances(&snap)
+		writeJSON(w, snap)
 	case http.MethodPatch:
 		var body struct {
 			Notes string `json:"notes"`
@@ -33,6 +36,27 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.Sess.Snapshot())
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// enrichFavorDistances attaches the distance from the player's current zone to
+// each favor target on the RESPONSE copy only. New slices are built so live
+// session state is never mutated (Snapshot copies LootEntry structs but shares
+// the FavorTargets backing arrays).
+func (s *Server) enrichFavorDistances(snap *session.Snapshot) {
+	for i := range snap.Loot {
+		d := &snap.Loot[i].Decision
+		if len(d.FavorTargets) == 0 {
+			continue
+		}
+		targets := make([]favor.Target, len(d.FavorTargets))
+		copy(targets, d.FavorTargets)
+		for j := range targets {
+			if dist, ok := s.areaDistance(snap.Zone, targets[j].Area); ok {
+				targets[j].DistanceKm = &dist
+			}
+		}
+		d.FavorTargets = targets
 	}
 }
 
@@ -172,6 +196,7 @@ type SessionSummary struct {
 	ID           string    `json:"id"`
 	Dungeon      string    `json:"dungeon"`
 	Notes        string    `json:"notes,omitempty"`
+	Tags         []string  `json:"tags,omitempty"`
 	StartedAt    time.Time `json:"started_at"`
 	EndedAt      time.Time `json:"ended_at"`
 	DurationSecs int       `json:"duration_secs"`
@@ -253,6 +278,7 @@ func (s *Server) buildSessions() []SessionSummary {
 			ID:           strings.TrimSuffix(file.Name(), ".json"),
 			Dungeon:      snapshot.Dungeon,
 			Notes:        snapshot.Notes,
+			Tags:         snapshot.Tags,
 			StartedAt:    snapshot.StartedAt,
 			EndedAt:      snapshot.EndedAt,
 			DurationSecs: int(snapshot.EndedAt.Sub(snapshot.StartedAt).Seconds()),
@@ -304,6 +330,10 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionExport(w, r)
 		return
 	}
+	if strings.HasSuffix(path, "/zones") {
+		s.handleSessionZones(w, r)
+		return
+	}
 
 	sessionID := path
 	if sessionID == "" {
@@ -351,13 +381,15 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var body struct {
-			Notes string `json:"notes"`
+			Notes string   `json:"notes"`
+			Tags  []string `json:"tags"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		snapshot.Notes = body.Notes
+		snapshot.Tags = body.Tags
 		out, _ := json.MarshalIndent(snapshot, "", "  ")
 		if err := os.WriteFile(filePath, out, 0644); err != nil {
 			http.Error(w, "failed to save", http.StatusInternalServerError)
@@ -542,4 +574,139 @@ func (s *Server) handleSessionsCompare(w http.ResponseWriter, r *http.Request) {
 			"xp":         float64(a.XP - b.XP),
 		},
 	})
+}
+
+// zoneStat is one row of the per-zone performance summary.
+type zoneStat struct {
+	Zone         string  `json:"zone"`
+	Seconds      float64 `json:"seconds"`
+	LootCount    int     `json:"loot_count"`
+	LootValue    float64 `json:"loot_value"`
+	Kills        int     `json:"kills"`
+	Deaths       int     `json:"deaths"`
+	XP           int     `json:"xp"`
+	ValuePerHour float64 `json:"value_per_hour"`
+	KillsPerHour float64 `json:"kills_per_hour"`
+}
+
+// handleSessionZones: GET per-zone performance summary for a past session.
+// Route is /api/session/{id}/zones, dispatched from handleSessionByID.
+func (s *Server) handleSessionZones(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sessionID := strings.TrimPrefix(r.URL.Path, "/api/session/")
+	sessionID = strings.TrimSuffix(sessionID, "/zones")
+	if sessionID == "" {
+		http.Error(w, "session ID required", http.StatusBadRequest)
+		return
+	}
+	if !validSessionID(sessionID) {
+		http.Error(w, "invalid session ID", http.StatusBadRequest)
+		return
+	}
+	s.cfgMu.RLock()
+	reportDir := s.Cfg.ReportDir
+	s.cfgMu.RUnlock()
+	if reportDir == "" {
+		http.Error(w, "report directory not configured", http.StatusInternalServerError)
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(reportDir, sessionID+".json"))
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	var snap session.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		http.Error(w, "failed to parse session", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, zoneSummary(snap))
+}
+
+// zoneSummary aggregates loot/kills/deaths/XP per zone for one session report.
+// Zones are ordered by first appearance in zone_history. Zone i covers
+// [zone_history[i].Time, zone_history[i+1].Time), with the first zone starting
+// at StartedAt and the last ending at EndedAt. Events before the first
+// zone_history entry count toward the first zone. With no zone_history, a
+// single "" zone spans the whole session.
+func zoneSummary(snap session.Snapshot) []zoneStat {
+	zh := snap.ZoneHistory
+	endedAt := snap.EndedAt
+	if endedAt.IsZero() {
+		endedAt = snap.StartedAt.Add(time.Minute)
+	}
+
+	// zoneAt returns the index of the last zone_history entry at-or-before t.
+	// Pre-first events (and the no-history case) land on index 0.
+	zoneAt := func(t time.Time) int {
+		if len(zh) == 0 {
+			return 0
+		}
+		if t.IsZero() {
+			return -1
+		}
+		idx := 0
+		for idx+1 < len(zh) && !zh[idx+1].Time.After(t) {
+			idx++
+		}
+		return idx
+	}
+
+	stats := make([]zoneStat, 0, len(zh)+1)
+	for _, z := range zh {
+		stats = append(stats, zoneStat{Zone: z.Zone})
+	}
+	if len(stats) == 0 {
+		stats = append(stats, zoneStat{})
+	}
+
+	for i := range stats {
+		start := snap.StartedAt
+		if i > 0 {
+			start = zh[i].Time
+		}
+		end := endedAt
+		if i+1 < len(stats) {
+			end = zh[i+1].Time
+		}
+		if secs := end.Sub(start).Seconds(); secs > 0 {
+			stats[i].Seconds = secs
+		}
+	}
+
+	for _, le := range snap.LootEvents {
+		if le.Time.IsZero() {
+			continue
+		}
+		if idx := zoneAt(le.Time); idx >= 0 {
+			stats[idx].LootCount += le.Count
+			stats[idx].LootValue += le.Value * float64(le.Count)
+		}
+	}
+	for _, k := range snap.Kills {
+		if idx := zoneAt(k.Time); idx >= 0 {
+			stats[idx].Kills++
+		}
+	}
+	for _, d := range snap.Deaths {
+		if idx := zoneAt(d.Time); idx >= 0 {
+			stats[idx].Deaths++
+		}
+	}
+	for _, x := range snap.XPGains {
+		if idx := zoneAt(x.Time); idx >= 0 {
+			stats[idx].XP += x.Amount
+		}
+	}
+
+	for i := range stats {
+		if stats[i].Seconds > 0 {
+			stats[i].ValuePerHour = round1(stats[i].LootValue / (stats[i].Seconds / 3600))
+			stats[i].KillsPerHour = round1(float64(stats[i].Kills) / (stats[i].Seconds / 3600))
+		}
+	}
+	return stats
 }

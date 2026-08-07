@@ -199,6 +199,28 @@ func TestHandleConfig_PostOverlayPatch(t *testing.T) {
 	}
 }
 
+func TestHandleConfig_PostSessionTemplates(t *testing.T) {
+	configHome(t)
+	srv := liveComponents(t)
+
+	w := postJSON(t, srv.handleConfig, "/api/config",
+		`{"session_templates":[{"name":"Serbule Farm","zone":"Serbule","notes":"kill wolves, loot hide"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	tmpls, ok := resp["session_templates"].([]any)
+	if !ok || len(tmpls) != 1 {
+		t.Fatalf("expected 1 session_template, got %#v", resp["session_templates"])
+	}
+	if len(srv.Cfg.SessionTemplates) != 1 || srv.Cfg.SessionTemplates[0].Name != "Serbule Farm" {
+		t.Errorf("expected live template, got %#v", srv.Cfg.SessionTemplates)
+	}
+}
+
 func TestHandleConfig_PostUnknownFieldRejected(t *testing.T) {
 	configHome(t)
 	srv := liveComponents(t)
@@ -542,6 +564,65 @@ func TestHandleSession_PatchNotes(t *testing.T) {
 	srv.handleSession(w2, httptest.NewRequest("GET", "/api/session", nil))
 	if w2.Code != http.StatusOK {
 		t.Errorf("expected 200 from GET session, got %d", w2.Code)
+	}
+}
+
+func TestHandleSession_FavorTargetDistances(t *testing.T) {
+	mgr := session.New()
+	if err := mgr.Start("Test", ""); err != nil {
+		t.Fatalf("session start: %v", err)
+	}
+	mgr.SetZone("Eltibule")
+	started := mgr.Snapshot().StartedAt
+	mgr.AddLoot(session.LootEntry{
+		Name: "Meat", Valor: 5, Count: 1,
+		FirstSeen: started, LastSeen: started,
+		Decision: favor.Decision{
+			Item: "Meat", Verdict: favor.VerdictFavor,
+			FavorTargets: []favor.Target{
+				{NPC: "Same Zone", Area: "Eltibule", Score: 1},
+				{NPC: "Far Away", Area: "Vidaria", Score: 1},
+				{NPC: "Unknown Zone", Area: "Nowhere Land", Score: 1},
+			},
+		},
+	})
+	srv := &Server{Sess: mgr}
+
+	w := httptest.NewRecorder()
+	srv.handleSession(w, httptest.NewRequest("GET", "/api/session", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var snap session.Snapshot
+	if err := json.Unmarshal(w.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	if len(snap.Loot) != 1 || snap.Zone != "Eltibule" {
+		t.Fatalf("unexpected snapshot: zone=%q loot=%d", snap.Zone, len(snap.Loot))
+	}
+	byNPC := map[string]favor.Target{}
+	for _, tg := range snap.Loot[0].Decision.FavorTargets {
+		byNPC[tg.NPC] = tg
+	}
+
+	// Eltibule (200,450) -> Eltibule = 0 km
+	if d := byNPC["Same Zone"].DistanceKm; d == nil || *d != 0 {
+		t.Errorf("expected same-zone target at 0 km, got %v", d)
+	}
+	// Eltibule (200,450) -> Vidaria (300,920) ≈ 480.5 km
+	if d := byNPC["Far Away"].DistanceKm; d == nil || *d <= 480 || *d >= 481 {
+		t.Errorf("expected Vidaria target ~480.5 km, got %v", d)
+	}
+	// an area with no coords in the fallback table -> distance stays nil
+	if d := byNPC["Unknown Zone"].DistanceKm; d != nil {
+		t.Errorf("expected unknown-area target to have no distance, got %v", *d)
+	}
+
+	// live session state must not be mutated by response enrichment
+	for _, tg := range mgr.Snapshot().Loot[0].Decision.FavorTargets {
+		if tg.DistanceKm != nil {
+			t.Errorf("live session target %q mutated with distance %v", tg.NPC, *tg.DistanceKm)
+		}
 	}
 }
 

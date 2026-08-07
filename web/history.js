@@ -23,12 +23,13 @@ async function renderHistory() {
   $('#history-total-sessions').textContent = `${totalSessions} session${totalSessions !== 1 ? 's' : ''}`;
   $('#history-total-value').textContent = `${totalValue.toFixed(0)}g total`;
 
-  // Search/filter
+  // Search/filter (dungeon/notes + tag filter)
   const q = ($('#history-search')?.value || '').toLowerCase();
-  const filtered = q ? sessions.filter(s =>
-    (s.dungeon || '').toLowerCase().includes(q) ||
-    (s.notes || '').toLowerCase().includes(q)
-  ) : sessions;
+  const tq = ($('#history-tag-filter')?.value || '').toLowerCase();
+  const filtered = sessions.filter(s =>
+    (!q || (s.dungeon || '').toLowerCase().includes(q) || (s.notes || '').toLowerCase().includes(q)) &&
+    (!tq || sessionTagsMatch(s.tags, tq))
+  );
 
   const bulkMode = $('#bulk-toggle')?.checked;
   const selected = new Set(state._selectedSessions || []);
@@ -56,6 +57,7 @@ async function renderHistory() {
           <div class="history-card-date">${dateStr}</div>
         </div>
         ${session.notes ? `<div class="history-card-notes">${escapeHtml(session.notes)}</div>` : ''}
+        ${Array.isArray(session.tags) && session.tags.length ? `<div class="history-card-tags">${session.tags.map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
         <div class="history-card-stats">
           <div class="history-stat">
             <div class="history-stat-label">Duration</div>
@@ -116,13 +118,17 @@ function updateBulkActions() {
 }
 
 async function loadSessionDetail(sessionId) {
-  const snapshot = await api(`/api/session/${sessionId}`);
+  const [snapshot, zones] = await Promise.all([
+    api(`/api/session/${sessionId}`),
+    api(`/api/session/${sessionId}/zones`).catch(() => null),
+  ]);
   if (!snapshot) {
     toast('Failed to load session details', 'error');
     return;
   }
 
   state.historyDetail = snapshot;
+  state.historyDetailZones = zones;
   state.historyDetailId = sessionId;
   switchView('history-detail');
   renderHistoryDetail(snapshot);
@@ -147,6 +153,18 @@ function renderHistoryDetail(snapshot) {
       : '<span class="detail-notes-text detail-notes-empty">No notes</span>' +
         '<button class="edit-notes-btn" onclick="editHistoryNotes()">✏️</button>';
   }
+
+  // Tags with add/remove
+  const tagsEl = $('#history-detail-tags');
+  if (tagsEl) {
+    const tags = Array.isArray(snapshot.tags) ? snapshot.tags : [];
+    tagsEl.innerHTML = tags.length
+      ? tags.map(t => `<span class="tag-chip">${escapeHtml(t)} <button class="tag-x" onclick="removeHistoryTag(${JSON.stringify(t)})" title="Remove tag">×</button></span>`).join('')
+      : '<span class="detail-notes-text detail-notes-empty">No tags</span>';
+  }
+
+  // Zones performance panel (hidden silently when the endpoint isn't available)
+  renderHistoryZones(state.historyDetailZones);
 
   const loot = snapshot.loot || [];
   let totalItems = 0;
@@ -207,6 +225,41 @@ function renderHistoryDetail(snapshot) {
   activateHdTab('summary');
 }
 
+function renderHistoryZones(zones) {
+  const container = $('#hd-zones');
+  if (!container) return;
+  if (!Array.isArray(zones) || zones.length === 0) {
+    container.style.display = 'none';
+    return;
+  }
+  container.style.display = '';
+  const rows = zones.map(z => `<tr>
+    <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${escapeHtml(z.zone)}</td>
+    <td style="padding:4px 8px;border-bottom:1px solid var(--row)">${fmtZoneTime(z.seconds)}</td>
+    <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${z.loot_count || 0}</td>
+    <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${(Number(z.loot_value) || 0).toFixed(0)}g</td>
+    <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${z.kills || 0}</td>
+    <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${z.deaths || 0}</td>
+    <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${z.xp || 0}</td>
+    <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${(Number(z.value_per_hour) || 0).toFixed(0)}g/hr</td>
+    <td style="padding:4px 8px;border-bottom:1px solid var(--row);text-align:right">${(Number(z.kills_per_hour) || 0).toFixed(0)}/hr</td>
+  </tr>`).join('');
+  container.innerHTML = `
+    <h3 style="margin-top:16px">Zones</h3>
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr>
+        <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">Zone</th>
+        <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Time</th>
+        <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Loot</th>
+        <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Value</th>
+        <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Kills</th>
+        <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Deaths</th>
+        <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">XP</th>
+        <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Val/hr</th>
+        <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Kills/hr</th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 function renderHistorySummary(loot) {
   const favorItems = loot.filter(e => e.decision.verdict === 'favor');
   const sellItems = loot.filter(e => e.decision.verdict === 'sell_vendor' || e.decision.verdict === 'sell_consignment');
@@ -256,14 +309,34 @@ window.editHistoryNotes = function() {
 
 window.saveHistoryNotes = async function() {
   const notes = $('#notes-edit-textarea')?.value || '';
+  saveHistoryDetail(notes, state.historyDetail?.tags || []);
+};
+
+// PATCH always sends both keys (tags = full array replacement) so a tag edit
+// never clobbers notes and vice versa.
+window.saveHistoryDetail = async function(notes, tags) {
   const sessionId = state.historyDetailId;
   if (!sessionId) return;
-  const res = await api(`/api/session/${sessionId}`, 'PATCH', { notes });
+  const res = await api(`/api/session/${sessionId}`, 'PATCH', { notes, tags });
   if (res) {
     state.historyDetail = res;
-    toast('Notes saved', 'success');
+    toast('Saved', 'success');
     renderHistoryDetail(res);
   }
+};
+
+window.addHistoryTag = function() {
+  const input = $('#history-tag-input');
+  const tag = input?.value || '';
+  input.value = '';
+  const tags = addSessionTag(state.historyDetail?.tags || [], tag);
+  if (tags.length === (state.historyDetail?.tags || []).length) return; // nothing new to save
+  saveHistoryDetail(state.historyDetail?.notes || '', tags);
+};
+
+window.removeHistoryTag = function(tag) {
+  const tags = removeSessionTag(state.historyDetail?.tags || [], tag);
+  saveHistoryDetail(state.historyDetail?.notes || '', tags);
 };
 
 window.deleteSession = async function(sessionId) {
@@ -402,6 +475,11 @@ window.showCompareModal = async function() {
 
 // History search input
 $('#history-search')?.addEventListener('input', () => {
+  if (state.currentView === 'history') renderHistory();
+});
+
+// History tag filter input
+$('#history-tag-filter')?.addEventListener('input', () => {
   if (state.currentView === 'history') renderHistory();
 });
 

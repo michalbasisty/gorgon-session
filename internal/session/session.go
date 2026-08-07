@@ -238,6 +238,7 @@ type Snapshot struct {
 	State           State             `json:"state"`
 	Dungeon         string            `json:"dungeon"`
 	Notes           string            `json:"notes,omitempty"`
+	Tags            []string          `json:"tags,omitempty"`
 	StartedAt       time.Time         `json:"started_at"`
 	EndedAt         time.Time         `json:"ended_at"`
 	Loot            []LootEntry       `json:"loot"`

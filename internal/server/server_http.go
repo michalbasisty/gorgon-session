@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -101,6 +102,7 @@ func configPayload(c config.Config) map[string]any {
 		"notification_threshold": c.NotificationThreshold,
 		"backup_enabled":         c.BackupEnabled,
 		"overlay":                c.Overlay,
+		"session_templates":      c.SessionTemplates,
 	}
 }
 
@@ -112,8 +114,9 @@ type configPatch struct {
 	SellValueThreshold    *float64            `json:"sell_value_threshold"`
 	PlayerPrices          *map[string]float64 `json:"player_prices"`
 	NotificationThreshold *float64            `json:"notification_threshold"`
-	BackupEnabled         *bool               `json:"backup_enabled"`
+	BackupEnabled         *bool                   `json:"backup_enabled"`
 	Overlay               *config.OverlaySettings `json:"overlay"`
+	SessionTemplates      *[]config.SessionTemplate `json:"session_templates"`
 }
 
 // applyConfigPatch overlays non-nil patch fields onto cfg (partial merge).
@@ -141,6 +144,9 @@ func applyConfigPatch(cfg config.Config, p configPatch) config.Config {
 	}
 	if p.Overlay != nil {
 		cfg.Overlay = *p.Overlay
+	}
+	if p.SessionTemplates != nil {
+		cfg.SessionTemplates = *p.SessionTemplates
 	}
 	return cfg
 }
@@ -241,5 +247,9 @@ func (s *Server) handleOverlaySpawn(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		// NaN/Inf or other encode failures previously produced a silent
+		// 200 + empty body that crashed the client's .json() — surface them.
+		log.Printf("writeJSON: encode failed: %v", err)
+	}
 }

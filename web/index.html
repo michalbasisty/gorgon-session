@@ -86,6 +86,9 @@
       <h1 id="view-title">Tracker <small id="state">idle</small></h1>
       <div class="controls">
         <input id="dungeon" type="text" placeholder="dungeon / zone name" autocomplete="off">
+        <select id="session-template-select" title="Session template — pre-fills dungeon/zone and notes">
+          <option value="">No template</option>
+        </select>
         <button id="start">start</button>
         <button id="stop" disabled>stop</button>
         <span id="elapsed"></span>
@@ -113,6 +116,10 @@
             </label>
           </div>
           <div id="route-plan-results"></div>
+        </details>
+        <details class="route-plan-panel" id="sell-checklist-panel">
+          <summary>Sell Checklist</summary>
+          <div id="sell-checklist-body"><div class="route-plan-empty">Loading...</div></div>
         </details>
         <div class="tracker-controls">
           <input id="loot-search" type="text" placeholder="search items..." autocomplete="off">
@@ -211,6 +218,9 @@
             <div class="settings-search" style="flex:1">
               <input id="history-search" type="text" placeholder="search by dungeon or notes..." autocomplete="off">
             </div>
+            <div class="settings-search" style="flex:1">
+              <input id="history-tag-filter" type="text" placeholder="filter by tag..." autocomplete="off">
+            </div>
             <button id="compare-btn" class="filter-btn" onclick="showCompareModal()" title="Compare two sessions">Compare</button>
             <label class="bulk-toggle"><input type="checkbox" id="bulk-toggle"> Select</label>
             <div id="bulk-actions" class="bulk-actions hidden">
@@ -238,6 +248,11 @@
             <span id="history-detail-duration"></span>
           </div>
           <div id="history-detail-notes" class="history-detail-notes"></div>
+          <div id="history-detail-tags" class="history-detail-tags"></div>
+          <div class="history-detail-tag-add">
+            <input id="history-tag-input" type="text" placeholder="add tag..." autocomplete="off" onkeydown="if(event.key==='Enter')addHistoryTag()">
+            <button class="add-btn" onclick="addHistoryTag()">Add Tag</button>
+          </div>
         </div>
           <div class="history-detail-stats">
             <div class="stat-card">
@@ -287,6 +302,7 @@
                 <div id="hd-keep-list"></div>
               </div>
             </div>
+            <div id="hd-zones"></div>
           </div>
           <div id="hd-panel-timeline" class="hd-panel hidden">
             <h3>Timeline</h3>
@@ -383,6 +399,10 @@
       <!-- Recipes view -->
       <section id="view-recipes" class="hidden">
         <h2>Recipe Browser</h2>
+        <details class="route-plan-panel tracked-recipes-panel" open>
+          <summary>Tracked Recipes &amp; Materials</summary>
+          <div id="tracked-recipes-body"><div class="route-plan-empty">Loading...</div></div>
+        </details>
         <div class="profit-calculator">
           <h3>Profit Calculator</h3>
           <div class="crafting-controls">
@@ -513,6 +533,18 @@
             <span id="pp-count" class="pp-count">0 items</span>
           </div>
           <div id="pp-list"></div>
+        </div>
+
+        <div class="player-prices-section session-templates-section">
+          <h3>Session Templates</h3>
+          <p class="form-help">Templates pre-fill the dungeon/zone and notes when starting a session. Name and notes are required.</p>
+          <div class="player-prices-add session-templates-add">
+            <input id="st-name" type="text" placeholder="Template name" autocomplete="off">
+            <input id="st-zone" type="text" placeholder="Zone / dungeon (optional)" autocomplete="off">
+            <textarea id="st-notes" placeholder="Session notes" rows="2"></textarea>
+            <button id="st-add">Add</button>
+          </div>
+          <div id="st-list"></div>
         </div>
 
         <div class="settings-actions">

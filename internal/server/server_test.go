@@ -818,6 +818,9 @@ type dropRateZone struct {
 	Count        int     `json:"count"`
 	SessionCount int     `json:"session_count"`
 	Chance       float64 `json:"chance"`
+	Kills        int     `json:"kills"`
+	ConfLower    float64 `json:"conf_lower"`
+	LowSample    bool    `json:"low_sample"`
 }
 
 type dropRateItem struct {
@@ -1338,3 +1341,314 @@ func TestHandleRoutePlanner_DistanceFallback(t *testing.T) {
 		t.Errorf("expected Eltibule Trader at 150km, got %+v", resp.Routes[1])
 	}
 }
+
+// ---- Zone performance summary (GET /api/session/{id}/zones) ----
+
+type zoneStatResp struct {
+	Zone         string  `json:"zone"`
+	Seconds      float64 `json:"seconds"`
+	LootCount    int     `json:"loot_count"`
+	LootValue    float64 `json:"loot_value"`
+	Kills        int     `json:"kills"`
+	Deaths       int     `json:"deaths"`
+	XP           int     `json:"xp"`
+	ValuePerHour float64 `json:"value_per_hour"`
+	KillsPerHour float64 `json:"kills_per_hour"`
+}
+
+func getSessionZones(t *testing.T, srv *Server, id string) (int, []zoneStatResp) {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/api/session/"+id+"/zones", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessionByID(w, req)
+	if w.Code != http.StatusOK {
+		return w.Code, nil
+	}
+	var out []zoneStatResp
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	return w.Code, out
+}
+
+func TestHandleSessionZones(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := config.Config{ReportDir: tmpDir}
+	srv := &Server{Cfg: cfg}
+
+	base := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	snap := session.Snapshot{
+		State:     session.Stopped,
+		StartedAt: base,
+		EndedAt:   base.Add(60 * time.Second),
+		ZoneHistory: []session.ZoneEntry{
+			{Zone: "Forest", Time: base.Add(10 * time.Second)},
+			{Zone: "Cave", Time: base.Add(30 * time.Second)},
+		},
+		LootEvents: []session.LootEvent{
+			{Name: "Mushroom", Count: 1, Value: 10, Time: base.Add(5 * time.Second)}, // before first zone -> Forest
+			{Name: "Berry", Count: 2, Value: 5, Time: base.Add(15 * time.Second)},    // Forest
+			{Name: "Gem", Count: 1, Value: 50, Time: base.Add(35 * time.Second)},     // Cave
+		},
+		Kills: []session.KillEvent{
+			{Mob: "Wolf", Time: base.Add(20 * time.Second)}, // Forest
+			{Mob: "Bear", Time: base.Add(40 * time.Second)}, // Cave
+		},
+		Deaths: []session.DeathEvent{
+			{Time: base.Add(25 * time.Second)}, // Forest
+			{Time: base.Add(45 * time.Second)}, // Cave
+		},
+		XPGains: []session.XPGain{
+			{Skill: "Sword", Amount: 100, Time: base.Add(12 * time.Second)}, // Forest
+			{Skill: "Sword", Amount: 50, Time: base.Add(50 * time.Second)},  // Cave
+		},
+	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("failed to marshal snapshot: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "session-20260201-120000.json"), data, 0644); err != nil {
+		t.Fatalf("failed to write session file: %v", err)
+	}
+
+	code, zones := getSessionZones(t, srv, "session-20260201-120000")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if len(zones) != 2 {
+		t.Fatalf("expected 2 zones, got %+v", zones)
+	}
+
+	forest := zones[0]
+	if forest.Zone != "Forest" || forest.Seconds != 30 ||
+		forest.LootCount != 3 || forest.LootValue != 20 ||
+		forest.Kills != 1 || forest.Deaths != 1 || forest.XP != 100 {
+		t.Errorf("Forest: got %+v", forest)
+	}
+	if forest.ValuePerHour != 2400 || forest.KillsPerHour != 120 {
+		t.Errorf("Forest rates: got value_per_hour=%v kills_per_hour=%v, want 2400 120", forest.ValuePerHour, forest.KillsPerHour)
+	}
+
+	cave := zones[1]
+	if cave.Zone != "Cave" || cave.Seconds != 30 ||
+		cave.LootCount != 1 || cave.LootValue != 50 ||
+		cave.Kills != 1 || cave.Deaths != 1 || cave.XP != 50 {
+		t.Errorf("Cave: got %+v", cave)
+	}
+	if cave.ValuePerHour != 6000 || cave.KillsPerHour != 120 {
+		t.Errorf("Cave rates: got value_per_hour=%v kills_per_hour=%v, want 6000 120", cave.ValuePerHour, cave.KillsPerHour)
+	}
+}
+
+func TestHandleSessionZones_NoZoneHistory(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := config.Config{ReportDir: tmpDir}
+	srv := &Server{Cfg: cfg}
+
+	base := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	snap := session.Snapshot{
+		State:     session.Stopped,
+		StartedAt: base,
+		EndedAt:   base.Add(30 * time.Second), // EndedAt zero fallback would be +1min
+		LootEvents: []session.LootEvent{
+			{Name: "Coin", Count: 4, Value: 5, Time: base.Add(2 * time.Second)},
+		},
+		Kills: []session.KillEvent{
+			{Mob: "Rat", Time: base.Add(3 * time.Second)},
+		},
+	}
+	data, _ := json.Marshal(snap)
+	os.WriteFile(filepath.Join(tmpDir, "session-20260201-120000.json"), data, 0644)
+
+	code, zones := getSessionZones(t, srv, "session-20260201-120000")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if len(zones) != 1 {
+		t.Fatalf("expected 1 zone, got %+v", zones)
+	}
+	z := zones[0]
+	if z.Zone != "" || z.Seconds != 30 || z.LootCount != 4 || z.LootValue != 20 || z.Kills != 1 {
+		t.Errorf("empty-zone summary: got %+v", z)
+	}
+	if z.ValuePerHour != 2400 || z.KillsPerHour != 120 {
+		t.Errorf("empty-zone rates: got %v %v, want 2400 120", z.ValuePerHour, z.KillsPerHour)
+	}
+}
+
+func TestHandleSessionZones_NotFoundAndInvalid(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := config.Config{ReportDir: tmpDir}
+	srv := &Server{Cfg: cfg}
+
+	req := httptest.NewRequest("GET", "/api/session/session-20990101-000000/zones", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessionByID(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing session, got %d", w.Code)
+	}
+
+	req2 := httptest.NewRequest("GET", "/api/session/../../evil/zones", nil)
+	w2 := httptest.NewRecorder()
+	srv.handleSessionByID(w2, req2)
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid ID, got %d", w2.Code)
+	}
+}
+
+// ---- Drop-rate confidence fields ----
+
+func TestHandleDropRates_Confidence(t *testing.T) {
+	resp := getDropRates(t, writeDropRatesFixture(t), "")
+
+	items := itemsByName(resp.Items)
+	wf, ok := items["Wolf Fang"]
+	if !ok {
+		t.Fatal("expected Wolf Fang in results")
+	}
+	// Wolf is killed twice in the fixture; Bear once.
+	byName := func(srcs []dropRateZone, name string) *dropRateZone {
+		for i := range srcs {
+			if srcs[i].Name == name {
+				return &srcs[i]
+			}
+		}
+		return nil
+	}
+	wolf := byName(wf.Sources, "Wolf")
+	if wolf == nil {
+		t.Fatalf("expected Wolf source, got %+v", wf.Sources)
+	}
+	if wolf.Kills != 2 {
+		t.Errorf("Wolf kills: got %d, want 2", wolf.Kills)
+	}
+	if !wolf.LowSample {
+		t.Errorf("Wolf (2 kills < 30) should have low_sample=true")
+	}
+	if wolf.ConfLower <= 0 || wolf.ConfLower > wolf.Chance {
+		t.Errorf("Wolf conf_lower %v should be in (0, chance %v]", wolf.ConfLower, wolf.Chance)
+	}
+
+	bear := byName(wf.Sources, "Bear")
+	if bear != nil {
+		t.Errorf("Wolf Fang should have no Bear source, got %+v", bear)
+	}
+
+	bc, ok := items["Bear Claw"]
+	if !ok {
+		t.Fatal("expected Bear Claw in results")
+	}
+	bearSrc := byName(bc.Sources, "Bear")
+	if bearSrc == nil {
+		t.Fatalf("expected Bear source, got %+v", bc.Sources)
+	}
+	if bearSrc.Kills != 1 || !bearSrc.LowSample {
+		t.Errorf("Bear: kills=%d low_sample=%v, want kills=1 low_sample=true", bearSrc.Kills, bearSrc.LowSample)
+	}
+	if bearSrc.ConfLower <= 0 || bearSrc.ConfLower > bearSrc.Chance {
+		t.Errorf("Bear conf_lower %v should be in (0, chance %v]", bearSrc.ConfLower, bearSrc.Chance)
+	}
+
+	// Zone breakdown carries the same fields (1 kill per zone in the fixture).
+	ruins := byName(wf.Zones, "Ruins")
+	if ruins == nil {
+		t.Fatalf("expected Ruins zone, got %+v", wf.Zones)
+	}
+	if ruins.Kills != 1 || !ruins.LowSample {
+		t.Errorf("Ruins: kills=%d low_sample=%v, want kills=1 low_sample=true", ruins.Kills, ruins.LowSample)
+	}
+	if ruins.ConfLower <= 0 || ruins.ConfLower > ruins.Chance {
+		t.Errorf("Ruins conf_lower %v should be in (0, chance %v]", ruins.ConfLower, ruins.Chance)
+	}
+}
+
+func TestHandleDropRates_UnknownSourceNoKills(t *testing.T) {
+	tmpDir := t.TempDir()
+	base := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	snap := session.Snapshot{
+		State:   session.Stopped,
+		Dungeon: "Test Dungeon", // normalizes to "" -> "Unknown" fallback
+		LootEvents: []session.LootEvent{
+			{Name: "Loose Coin", Count: 1, Value: 5, Time: base},
+		},
+	}
+	data, _ := json.Marshal(snap)
+	os.WriteFile(filepath.Join(tmpDir, "session-20260301-090000.json"), data, 0644)
+	srv := &Server{Cfg: config.Config{ReportDir: tmpDir}, Sess: session.New()}
+
+	resp := getDropRates(t, srv, "")
+	items := itemsByName(resp.Items)
+	lc, ok := items["Loose Coin"]
+	if !ok {
+		t.Fatalf("expected Loose Coin in results, got %+v", resp.Items)
+	}
+	if len(lc.Sources) != 1 || lc.Sources[0].Name != "Unknown" {
+		t.Fatalf("expected single Unknown source, got %+v", lc.Sources)
+	}
+	src := lc.Sources[0]
+	if src.Kills != 0 || !src.LowSample || src.ConfLower != 0 {
+		t.Errorf("Unknown source: kills=%d low_sample=%v conf_lower=%v, want 0/true/0", src.Kills, src.LowSample, src.ConfLower)
+	}
+}
+
+// ---- Session tags (PATCH round-trip) ----
+
+func TestHandleSessionByID_PatchTags(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := config.Config{ReportDir: tmpDir}
+	srv := &Server{Cfg: cfg, Sess: session.New()}
+
+	snapshot := session.Snapshot{
+		State:   session.Stopped,
+		Dungeon: "Test Dungeon",
+		Notes:   "old note",
+	}
+	data, _ := json.Marshal(snapshot)
+	os.WriteFile(filepath.Join(tmpDir, "session-20240101-120000.json"), data, 0644)
+
+	// PATCH notes + tags
+	body := `{"notes":"updated note","tags":["boss","farm"]}`
+	req := httptest.NewRequest("PATCH", "/api/session/session-20240101-120000", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleSessionByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on PATCH, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// GET returns them
+	req2 := httptest.NewRequest("GET", "/api/session/session-20240101-120000", nil)
+	w2 := httptest.NewRecorder()
+	srv.handleSessionByID(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 on GET, got %d", w2.Code)
+	}
+	var got session.Snapshot
+	if err := json.Unmarshal(w2.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	if got.Notes != "updated note" {
+		t.Errorf("Notes: got %q, want %q", got.Notes, "updated note")
+	}
+	if len(got.Tags) != 2 || got.Tags[0] != "boss" || got.Tags[1] != "farm" {
+		t.Errorf("Tags: got %v, want [boss farm]", got.Tags)
+	}
+
+	// sessions list summary includes tags
+	req3 := httptest.NewRequest("GET", "/api/sessions", nil)
+	w3 := httptest.NewRecorder()
+	srv.handleSessions(w3, req3)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("expected 200 on sessions list, got %d", w3.Code)
+	}
+	var list []SessionSummary
+	if err := json.Unmarshal(w3.Body.Bytes(), &list); err != nil {
+		t.Fatalf("failed to parse sessions JSON: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 session summary, got %+v", list)
+	}
+	if len(list[0].Tags) != 2 || list[0].Tags[0] != "boss" || list[0].Tags[1] != "farm" {
+		t.Errorf("summary Tags: got %v, want [boss farm]", list[0].Tags)
+	}
+}
+

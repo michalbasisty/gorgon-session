@@ -20,6 +20,44 @@ import (
 // round1 rounds to one decimal place for display-friendly float fields.
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 
+// npcDisplayName maps a game-internal NPC key (e.g. "NPC_Rugen") to its
+// friendly name ("Rugen") via the CDN data. Unknown/blank names pass through.
+func (s *Server) npcDisplayName(raw string) string {
+	n := strings.TrimSpace(raw)
+	if n == "" {
+		return n
+	}
+	if npc, ok := s.Npcs[n]; ok && strings.TrimSpace(npc.Name) != "" {
+		return npc.Name
+	}
+	return n
+}
+
+// wilsonLower returns the 95% Wilson score lower bound (as a fraction) for
+// `drops` out of `kills`, clamped to [0, observed rate]. Returns 0 when
+// kills == 0.
+func wilsonLower(drops, kills float64) float64 {
+	if kills <= 0 {
+		return 0
+	}
+	const z = 1.96
+	z2 := z * z
+	phat := (drops + z2/2) / (kills + z2)
+	if phat > 1 {
+		phat = 1 // drops can exceed kills (multi-loot); clamp so sqrt arg stays >= 0
+	}
+	halfwidth := z * math.Sqrt((phat*(1-phat)+z2/(4*kills))/kills) / (1 + z2/kills)
+	lower := phat - halfwidth
+	observed := drops / kills
+	if lower < 0 {
+		lower = 0
+	}
+	if lower > observed {
+		lower = observed
+	}
+	return lower
+}
+
 // handleAreas returns areas as internal key -> friendly name.
 func (s *Server) handleAreas(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -365,6 +403,9 @@ func (s *Server) handleDropRates(w http.ResponseWriter, r *http.Request) {
 		Count        int     `json:"count"`
 		SessionCount int     `json:"session_count"`
 		Chance       float64 `json:"chance"` // per-source chance [%]
+		Kills        int     `json:"kills"`
+		ConfLower    float64 `json:"conf_lower"` // 95% Wilson lower bound on per-kill rate [%]
+		LowSample    bool    `json:"low_sample"` // true when kills < 30
 	}
 	type dropStat struct {
 		Name          string       `json:"name"`
@@ -431,7 +472,7 @@ func (s *Server) handleDropRates(w http.ResponseWriter, r *http.Request) {
 		if bestMob == "" {
 			return fallback
 		}
-		return bestMob
+		return s.npcDisplayName(bestMob)
 	}
 
 	normalizeContext := func(v string) string {
@@ -454,6 +495,9 @@ func (s *Server) handleDropRates(w http.ResponseWriter, r *http.Request) {
 	zoneOpportunitySessions := map[string]int{}
 	// global per-zone item totals across the filtered event stream
 	zoneTotals := map[string]int{}
+	// kill-event totals per source mob and per zone (for Wilson confidence)
+	sourceKills := map[string]int{}
+	zoneKills := map[string]int{}
 
 	for _, file := range files {
 		if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
@@ -479,12 +523,12 @@ func (s *Server) handleDropRates(w http.ResponseWriter, r *http.Request) {
 
 		// Mark source opportunities in this session.
 		sessionSources := map[string]bool{}
-		for _, k := range snap.Kills {
-			mob := strings.TrimSpace(k.Mob)
-			if mob != "" {
-				sessionSources[mob] = true
-			}
+	for _, k := range snap.Kills {
+		mob := s.npcDisplayName(k.Mob)
+		if mob != "" {
+			sessionSources[mob] = true
 		}
+	}
 		if len(sessionSources) == 0 {
 			sessionSources[sessionFallbackSource] = true
 		}
@@ -529,6 +573,32 @@ func (s *Server) handleDropRates(w http.ResponseWriter, r *http.Request) {
 		}
 		for z := range sessionZones {
 			zoneOpportunitySessions[z]++
+		}
+
+		// Kill attribution for confidence bounds. Kill events are
+		// chronological, so a fresh walker is safe here (the zoneAt closure
+		// above has already advanced over the loot timeline).
+		zi2 := 0
+		zoneAtKill := func(t time.Time) string {
+			if len(zh) == 0 || t.IsZero() {
+				return zoneFallback
+			}
+			for zi2+1 < len(zh) && !zh[zi2+1].Time.After(t) {
+				zi2++
+			}
+			if zh[zi2].Time.After(t) {
+				return zoneFallback
+			}
+			if z := strings.TrimSpace(zh[zi2].Zone); z != "" {
+				return z
+			}
+			return zoneFallback
+		}
+		for _, k := range snap.Kills {
+			if mob := s.npcDisplayName(k.Mob); mob != "" {
+				sourceKills[mob]++
+			}
+			zoneKills[zoneAtKill(k.Time)]++
 		}
 
 		seenItem := map[string]bool{}
@@ -703,11 +773,19 @@ func (s *Server) handleDropRates(w http.ResponseWriter, r *http.Request) {
 			if opp > 0 {
 				chance = (float64(sa.SessionCount) / float64(opp)) * 100.0
 			}
+			kills := sourceKills[srcName]
+			confLower := 0.0
+			if kills > 0 {
+				confLower = round1(wilsonLower(float64(sa.Count), float64(kills)) * 100)
+			}
 			sources = append(sources, dropSource{
 				Name:         srcName,
 				Count:        sa.Count,
 				SessionCount: sa.SessionCount,
 				Chance:       chance,
+				Kills:        kills,
+				ConfLower:    confLower,
+				LowSample:    kills < 30,
 			})
 		}
 		sort.Slice(sources, func(i, j int) bool {
@@ -733,11 +811,19 @@ func (s *Server) handleDropRates(w http.ResponseWriter, r *http.Request) {
 			if opp > 0 {
 				chance = (float64(za.SessionCount) / float64(opp)) * 100.0
 			}
+			kills := zoneKills[zn]
+			confLower := 0.0
+			if kills > 0 {
+				confLower = round1(wilsonLower(float64(za.Count), float64(kills)) * 100)
+			}
 			zones = append(zones, dropSource{
 				Name:         zn,
 				Count:        za.Count,
 				SessionCount: za.SessionCount,
 				Chance:       chance,
+				Kills:        kills,
+				ConfLower:    confLower,
+				LowSample:    kills < 30,
 			})
 		}
 		sort.Slice(zones, func(i, j int) bool {

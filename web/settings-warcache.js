@@ -33,6 +33,11 @@ async function renderSettingsView() {
   state.playerPrices = cfg.player_prices || {};
   state.notificationThreshold = cfg.notification_threshold || 500;
   renderPlayerPrices();
+
+  // Session templates (empty array for older saved configs)
+  state.sessionTemplates = sessionTemplateList(cfg);
+  renderSessionTemplates(state.sessionTemplates);
+  populateTemplateSelect();
 }
 
 // Settings form submission
@@ -248,6 +253,69 @@ $('#pp-item-price')?.addEventListener('keydown', (e) => {
 $('#pp-search')?.addEventListener('input', (e) => {
   ppFilter = e.target.value;
   renderPlayerPrices();
+});
+
+// ==================== Session Templates ====================
+
+// Older saved configs have no session_templates key → treat as [].
+function sessionTemplateList(cfg) {
+  return Array.isArray(cfg && cfg.session_templates) ? cfg.session_templates : [];
+}
+
+// POST the full replacement array (config POST does a partial merge, so only
+// the session_templates key is sent — DisallowUnknownFields-safe).
+async function pushSessionTemplates(templates) {
+  const res = await api('/api/config', 'POST', { session_templates: templates });
+  if (res && res.ok) {
+    state.sessionTemplates = templates;
+    renderSessionTemplates(templates);
+    populateTemplateSelect();
+    return true;
+  }
+  return false;
+}
+
+function renderSessionTemplates(templates) {
+  const list = $('#st-list');
+  if (!list) return;
+  const arr = Array.isArray(templates) ? templates : [];
+  if (!arr.length) {
+    list.innerHTML = '<div class="summary-empty" style="padding:16px">No session templates yet</div>';
+    return;
+  }
+  list.innerHTML = '';
+  for (const t of arr) {
+    const row = document.createElement('div');
+    row.className = 'st-item';
+    row.innerHTML = `
+      <div class="st-item-main">
+        <span class="st-name">${escapeHtml(t.name)}</span>
+        ${t.zone ? `<span class="st-zone">${escapeHtml(t.zone)}</span>` : ''}
+        ${t.notes ? `<span class="st-notes">${escapeHtml(t.notes)}</span>` : ''}
+      </div>
+      <button class="pp-delete st-delete" aria-label="Delete ${escapeHtml(t.name)}" data-name="${escapeHtml(t.name)}">×</button>`;
+    list.appendChild(row);
+  }
+  list.querySelectorAll('.st-delete').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const next = arr.filter(x => x.name !== btn.dataset.name);
+      if (await pushSessionTemplates(next)) toast('Template deleted', 'success');
+    });
+  });
+}
+
+$('#st-add')?.addEventListener('click', async () => {
+  const name = ($('#st-name')?.value || '').trim();
+  const zone = ($('#st-zone')?.value || '').trim();
+  const notes = ($('#st-notes')?.value || '').trim();
+  if (!name || !notes) { toast('Name and notes are required', 'error'); return; }
+  const next = [...(state.sessionTemplates || []), { name, zone, notes }];
+  if (await pushSessionTemplates(next)) {
+    toast('Template saved', 'success');
+    $('#st-name').value = '';
+    $('#st-zone').value = '';
+    $('#st-notes').value = '';
+  }
 });
 
 // Export/Import
